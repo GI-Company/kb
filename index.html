@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kernos OS</title>
+    <!--
+      Fonts and Tailwind are bundled locally (index.css, via @tailwindcss/vite)
+      rather than loaded from a CDN: vercel.json sets Cross-Origin-Embedder-Policy
+      require-corp (needed for BNLM's SharedArrayBuffer-based parallel training),
+      which blocks cross-origin scripts/stylesheets that don't send a matching
+      Cross-Origin-Resource-Policy header — the Tailwind CDN script doesn't.
+      React/Zustand/etc. are real npm dependencies bundled by Vite; the old
+      esm.sh importmap here was dead weight left over from a bundler-less setup.
+    -->
+    <style>
+      body { margin: 0; padding: 0; overflow: hidden; background-color: #050505; color: #ffffff; font-family: 'Inter', system-ui, sans-serif; }
+      /* Custom Scrollbar for Terminals and Editors */
+      ::-webkit-scrollbar { width: 8px; height: 8px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
+      ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
+    </style>
+</head>
+  <body>
+    <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>

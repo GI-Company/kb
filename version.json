@@ -1,0 +1,23 @@
+{
+  "version": "1.0.0",
+  "codename": "Genesis",
+  "release_date": "2026-03-13",
+  "changelog": [
+    "Initial release",
+    "Codestral 22B integration (6 AI agents)",
+    "CDE — Cognitive Development Environment",
+    "User Accounts with persistent Hebbian memory",
+    "BIOS Setup Screen (F2 during boot)",
+    "GraphRAG entity extraction and knowledge graph",
+    "Real-time package manager with 9 packages",
+    "Zero-Trust architecture with command allowlisting"
+  ],
+  "min_go_version": "1.22",
+  "download_urls": {
+    "darwin_arm64": "https://github.com/GI-Company/kernos-os/releases/download/v1.0.0/kernos_darwin_arm64.tar.gz",
+    "darwin_amd64": "https://github.com/GI-Company/kernos-os/releases/download/v1.0.0/kernos_darwin_amd64.tar.gz",
+    "linux_amd64": "https://github.com/GI-Company/kernos-os/releases/download/v1.0.0/kernos_linux_amd64.tar.gz",
+    "linux_arm64": "https://github.com/GI-Company/kernos-os/releases/download/v1.0.0/kernos_linux_arm64.tar.gz",
+    "windows_amd64": "https://github.com/GI-Company/kernos-os/releases/download/v1.0.0/kernos_windows_amd64.zip"
+  }
+}

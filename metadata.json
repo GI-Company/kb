@@ -1,0 +1,5 @@
+{
+  "name": "Kernos OS",
+  "description": "A browser-native operating environment connecting a React desktop to a simulated Go Kernel via a WebSocket-style message bus.",
+  "requestFramePermissions": []
+}
