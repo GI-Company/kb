@@ -15,7 +15,7 @@
 
 import { createHash } from 'node:crypto';
 import { checkRateLimit, getClientIp, rateLimitResponseHeaders } from '../lib/rateLimit';
-import { supabaseAdmin, isSupabaseAdminConfigured } from '../lib/supabaseAdmin';
+import { callSupabaseRpc, isSupabaseAdminConfigured } from '../lib/supabaseAdmin';
 
 const LIMIT_SECONDS = 15 * 60;
 // Heartbeats fire ~every 20s from lib/guestUsage.ts — a few/minute is
@@ -54,19 +54,20 @@ export default async function handler(req: any, res: any) {
   const ipHash = createHash('sha256').update(ip).digest('hex');
   const usageDate = new Date().toISOString().slice(0, 10); // UTC calendar day
 
-  const { data, error } = await supabaseAdmin!.rpc('increment_guest_usage', {
-    p_ip_hash: ipHash,
-    p_usage_date: usageDate,
-    p_seconds: elapsedSeconds,
-  });
-
-  if (error) {
-    console.error('[guest-usage] increment_guest_usage failed:', error.message);
+  let usedSeconds = 0;
+  try {
+    const result = await callSupabaseRpc<number>('increment_guest_usage', {
+      p_ip_hash: ipHash,
+      p_usage_date: usageDate,
+      p_seconds: elapsedSeconds,
+    });
+    usedSeconds = typeof result === 'number' ? result : 0;
+  } catch (err: any) {
+    console.error('[guest-usage] increment_guest_usage failed:', err?.message || err);
     res.status(200).json({ usedSeconds: 0, limitSeconds: LIMIT_SECONDS, remainingSeconds: null, allowed: true, configured: true, error: true });
     return;
   }
 
-  const usedSeconds: number = typeof data === 'number' ? data : 0;
   const remainingSeconds = Math.max(0, LIMIT_SECONDS - usedSeconds);
   res.status(200).json({
     usedSeconds,
