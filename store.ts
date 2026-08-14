@@ -39,12 +39,23 @@ export const useOS = create<OSStore>((set) => ({
     if (appId === 'cde') { width = 1100; height = 700; }
     if (appId === 'local-model') { width = 1020; height = 660; }
 
+    // Cascade new windows down-right, but wrap around and clamp to the
+    // viewport instead of drifting further off-screen with every open —
+    // previously this grew unbounded (100 + count*20 forever), so the 5th+
+    // window (or any wide one, like CDE/Local Model, on a smaller screen)
+    // could spawn already partly or fully off-screen.
+    const viewportW = typeof window !== 'undefined' ? window.innerWidth : 1280;
+    const viewportH = typeof window !== 'undefined' ? window.innerHeight - 52 : 800; // minus taskbar
+    const cascade = state.windows.length % 8;
+    const x = Math.min(80 + cascade * 24, Math.max(20, viewportW - width - 20));
+    const y = Math.min(60 + cascade * 24, Math.max(20, viewportH - height - 20));
+
     const newWindow: WindowState = {
       id,
       appId,
       title: title || appId.charAt(0).toUpperCase() + appId.slice(1),
-      x: 100 + (state.windows.length * 20),
-      y: 100 + (state.windows.length * 20),
+      x,
+      y,
       width,
       height,
       zIndex: state.windows.length + 1,
@@ -69,9 +80,22 @@ export const useOS = create<OSStore>((set) => ({
     };
   }),
 
-  moveWindow: (id, x, y) => set((state) => ({
-    windows: state.windows.map(w => w.id === id ? { ...w, x, y } : w)
-  })),
+  // Clamped so a window can never be dragged fully off-screen with no way
+  // back — at least `minVisible` px of its width, and its whole title bar
+  // height, always stay within the viewport.
+  moveWindow: (id, x, y) => set((state) => {
+    const viewportW = typeof window !== 'undefined' ? window.innerWidth : 1280;
+    const viewportH = typeof window !== 'undefined' ? window.innerHeight - 52 : 800;
+    const minVisible = 80;
+    return {
+      windows: state.windows.map(w => {
+        if (w.id !== id) return w;
+        const clampedX = Math.min(Math.max(x, minVisible - w.width), viewportW - minVisible);
+        const clampedY = Math.min(Math.max(y, 0), Math.max(0, viewportH - 40));
+        return { ...w, x: clampedX, y: clampedY };
+      })
+    };
+  }),
 
   resizeWindow: (id, width, height) => set((state) => ({
     windows: state.windows.map(w => w.id === id ? { ...w, width, height } : w)

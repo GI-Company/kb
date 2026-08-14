@@ -2,6 +2,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { localModel, DEFAULT_LOCAL_MODEL_CONFIG, MixerType } from '../lib/localModel';
 import { runHistoryStore, genHistoryStore, RunHistoryEntry, GenHistoryEntry } from '../lib/localModelHistory';
 import { SavedModelMeta } from '../lib/modelRegistry';
+import { fetchGroqText } from '../lib/groqFetch';
 import { Cpu, Play, Sparkles, Download, RotateCcw, Loader2, Save, FolderOpen, Trash2, Wand2 } from 'lucide-react';
 
 const SAMPLE_CORPUS = `Once upon a time, there was a small robot named Kip. Kip lived in a workshop full of gears and wires.
@@ -15,39 +16,11 @@ When the bird's wing healed, it flew to the top of the workshop and looked back 
 interface LogLine { id: string; text: string; kind: 'info' | 'error' | 'success' }
 type BottomTab = 'log' | 'runs' | 'generations';
 
-/** Talks to /api/chat directly (not through the kernel bus — this isn't a chat-UI message, just a one-off content generation call) and returns the accumulated text. */
-async function generateDatasetViaGroq(topic: string, count: number): Promise<string> {
-  const res = await fetch('/api/chat', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      agentId: 'agent-coder',
-      message: `Generate exactly ${count} short children's stories in the TinyStories style (simple sentences, small vocabulary, 4-8 sentences each) about: ${topic}. Separate each story with a single blank line. Output ONLY the stories themselves — no titles, no numbering, no markdown formatting, no commentary before or after.`,
-    }),
-  });
-  if (!res.ok || !res.body) {
-    const text = await res.text().catch(() => '');
-    throw new Error(text || res.statusText);
-  }
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let full = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      let parsed: any;
-      try { parsed = JSON.parse(line); } catch { continue; }
-      if (parsed.error) throw new Error(parsed.error);
-      if (parsed.chunk) full += parsed.chunk;
-    }
-  }
-  return full.trim();
+function generateDatasetViaGroq(topic: string, count: number): Promise<string> {
+  return fetchGroqText(
+    'agent-coder',
+    `Generate exactly ${count} short children's stories in the TinyStories style (simple sentences, small vocabulary, 4-8 sentences each) about: ${topic}. Separate each story with a single blank line. Output ONLY the stories themselves — no titles, no numbering, no markdown formatting, no commentary before or after.`
+  );
 }
 
 export const LocalModelApp: React.FC = () => {

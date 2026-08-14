@@ -1,6 +1,7 @@
 import { Envelope } from '../types';
 import { DEFAULT_AGENTS } from '../lib/agents';
 import { chatStore } from '../lib/chatStore';
+import { getDemoPipeline, planGoal, runTaskGraph, TaskNode } from '../lib/taskEngine';
 
 type BusListener = (envelope: Envelope) => void;
 
@@ -77,6 +78,7 @@ class Kernel {
     if (env.topic === 'sys.terminal.intent') return void this.handleTerminalIntent(env);
     if (env.topic.startsWith('chat.')) return this.handleChatHistory(env);
     if (env.topic === 'applet.compile') return this.handleAppletCompile(env);
+    if (env.topic === 'task.run') return void this.handleTaskRun(env);
 
     // Everything else (bios.*, p2p.*, pkg.*, vfs:*, sys.config:*, sys.ps,
     // editor.typing, terminal.typing, ...) has no backend anymore in v1 —
@@ -224,6 +226,44 @@ class Kernel {
     } catch {
       // No translation this time — Terminal.tsx simply won't show one.
     }
+  }
+
+  /** DAG task execution — see lib/taskEngine.ts. Supports an explicit `nodes` array, a natural-language `goal` (planned via the Dispatcher persona), or the graphId "build-pipeline" demo, matching the three modes TaskRunner.tsx's UI offers. */
+  private async handleTaskRun(env: Envelope) {
+    const payload = env.payload as { graphId?: string; goal?: string; nodes?: TaskNode[] };
+    const runId = payload.graphId || `run-${Date.now()}`;
+
+    this.broadcast({ topic: 'task.run:ack', from: 'kernel', payload: { runId }, time: now() });
+
+    let nodes: TaskNode[];
+    try {
+      if (payload.nodes) {
+        nodes = payload.nodes;
+      } else if (payload.goal) {
+        nodes = await planGoal(payload.goal);
+      } else if (payload.graphId === 'build-pipeline') {
+        nodes = getDemoPipeline();
+      } else {
+        nodes = [];
+      }
+    } catch (err: any) {
+      this.broadcast({
+        topic: 'task.event',
+        from: 'kernel',
+        payload: { runId, step: 'plan', status: 'failed', progress: 100, output: err?.message || String(err) },
+        time: now(),
+      });
+      this.broadcast({ topic: 'task.done', from: 'kernel', payload: { runId }, time: now() });
+      return;
+    }
+
+    if (nodes.length > 0) {
+      await runTaskGraph(runId, nodes, event => {
+        this.broadcast({ topic: 'task.event', from: 'kernel', payload: event, time: now() });
+      });
+    }
+
+    this.broadcast({ topic: 'task.done', from: 'kernel', payload: { runId }, time: now() });
   }
 
   private handleAppletCompile(env: Envelope) {
