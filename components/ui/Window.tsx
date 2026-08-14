@@ -12,7 +12,7 @@ interface WindowProps {
 }
 
 export const Window: React.FC<WindowProps> = ({ data, children, liteMode }) => {
-  const { closeWindow, focusWindow, moveWindow, resizeWindow, minimizeWindow, maximizeWindow, openFeatureTour } = useOS();
+  const { closeWindow, focusWindow, moveWindow, resizeWindow, minimizeWindow, maximizeWindow, openFeatureTour, isMobile } = useOS();
   const hasTour = !!FEATURE_TOURS[data.appId];
   const [isDragging, setIsDragging] = useState(false);
   const [snapZone, setSnapZone] = useState<'left' | 'right' | 'top' | null>(null);
@@ -21,9 +21,15 @@ export const Window: React.FC<WindowProps> = ({ data, children, liteMode }) => {
 
   const SNAP_THRESHOLD = 20;
 
-  const handleMouseDown = (e: React.MouseEvent) => {
+  // Pointer Events (not Mouse Events) so this same handler drives mouse,
+  // touch, AND pen uniformly — mousedown/mousemove/mouseup never fire for
+  // touch input at all, which left window dragging completely non-
+  // functional on any touchscreen (tablets in particular, since phones get
+  // their own full-screen mode below and never drag windows in the first
+  // place).
+  const handlePointerDown = (e: React.PointerEvent) => {
     focusWindow(data.id);
-    if (!data.isMaximized) {
+    if (!data.isMaximized && !isMobile) {
       setIsDragging(true);
       preSnapSize.current = { width: data.width, height: data.height, x: data.x, y: data.y };
       dragOffset.current = {
@@ -34,7 +40,7 @@ export const Window: React.FC<WindowProps> = ({ data, children, liteMode }) => {
   };
 
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
+    const handlePointerMove = (e: PointerEvent) => {
       if (isDragging) {
         const newX = e.clientX - dragOffset.current.x;
         const newY = e.clientY - dragOffset.current.y;
@@ -54,10 +60,10 @@ export const Window: React.FC<WindowProps> = ({ data, children, liteMode }) => {
       }
     };
 
-    const handleMouseUp = () => {
+    const handlePointerUp = () => {
       if (isDragging && snapZone) {
         const vw = window.innerWidth;
-        const vh = window.innerHeight - 48; // subtract taskbar height
+        const vh = window.innerHeight - 52; // subtract taskbar height
 
         if (snapZone === 'left') {
           moveWindow(data.id, 0, 0);
@@ -74,12 +80,12 @@ export const Window: React.FC<WindowProps> = ({ data, children, liteMode }) => {
     };
 
     if (isDragging) {
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
+      window.addEventListener('pointermove', handlePointerMove);
+      window.addEventListener('pointerup', handlePointerUp);
     }
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
     };
   }, [isDragging, snapZone, data.id, moveWindow, resizeWindow, maximizeWindow]);
 
@@ -104,8 +110,22 @@ export const Window: React.FC<WindowProps> = ({ data, children, liteMode }) => {
     ? 'border-cyan-500/30 shadow-[0_0_50px_rgba(0,240,255,0.15)] ring-1 ring-cyan-500/20'
     : 'border-white/10 shadow-2xl shadow-black/80';
 
-  const style = data.isMaximized
-    ? { top: 0, left: 0, width: '100%', height: 'calc(100% - 48px)' }
+  // Mobile ignores the stored x/y/width/height entirely and fits exactly
+  // between Taskbar.tsx's mobile top status strip (h-7 = 28px, plus
+  // whatever safe-area-inset-top a notch adds) and bottom nav (h-16 =
+  // 64px, plus safe-area-inset-bottom) — expressed as env()/calc() rather
+  // than hardcoded pixels so it stays correct across rotation, viewport
+  // changes, and notched devices without the two components needing to
+  // agree on numbers any other way than "read the same CSS env vars".
+  const style = isMobile
+    ? {
+        top: 'calc(env(safe-area-inset-top, 0px) + 28px)',
+        left: 0,
+        width: '100%',
+        height: 'calc(100% - env(safe-area-inset-top, 0px) - 28px - env(safe-area-inset-bottom, 0px) - 64px)',
+      }
+    : data.isMaximized
+    ? { top: 0, left: 0, width: '100%', height: 'calc(100% - 52px)' }
     : { top: data.y, left: data.x, width: data.width, height: data.height };
 
   return (
@@ -117,34 +137,37 @@ export const Window: React.FC<WindowProps> = ({ data, children, liteMode }) => {
           exit={liteMode ? { opacity: 0, transition: { duration: 0.05 } } : { opacity: 0, scale: 0.95, y: 20, transition: { duration: 0.15 } }}
           transition={liteMode ? { duration: 0.08 } : { type: 'spring', damping: 25, stiffness: 300 }}
           style={{ ...style, zIndex: data.zIndex, position: 'absolute' }}
-          className={`flex flex-col bg-[#0f0f13]/85 backdrop-blur-2xl rounded-xl overflow-hidden ${liteMode ? '' : 'transition-[box-shadow,border-color] duration-300'} ${borderClass}`}
-          onMouseDown={() => focusWindow(data.id)}
+          className={`flex flex-col bg-[#0f0f13]/85 backdrop-blur-2xl ${isMobile ? '' : 'rounded-xl'} overflow-hidden ${liteMode ? '' : 'transition-[box-shadow,border-color] duration-300'} ${isMobile ? 'border-0' : borderClass}`}
+          onPointerDown={() => focusWindow(data.id)}
         >
           {/* Title Bar - Glassmorphic */}
           <div
-            onMouseDown={handleMouseDown}
-            className={`h-10 flex items-center justify-between px-3 bg-gradient-to-b from-white/[0.08] to-transparent border-b border-white/[0.06] select-none cursor-default active:cursor-grabbing backdrop-blur-md transition-colors duration-300 ${isActive ? 'bg-white/[0.05]' : 'bg-transparent'}`}
+            onPointerDown={handlePointerDown}
+            className={`h-10 flex items-center justify-between px-3 bg-gradient-to-b from-white/[0.08] to-transparent border-b border-white/[0.06] select-none backdrop-blur-md transition-colors duration-300 ${isMobile ? '' : 'touch-none cursor-default active:cursor-grabbing'} ${isActive ? 'bg-white/[0.05]' : 'bg-transparent'}`}
           >
             {/* Window Controls (Traffic Lights) */}
             <div className="flex items-center gap-2 group w-[60px]">
-              <button 
-                onClick={(e) => { e.stopPropagation(); closeWindow(data.id); }} 
+              <button
+                onClick={(e) => { e.stopPropagation(); closeWindow(data.id); }}
                 className="w-3 h-3 rounded-full bg-red-500/80 hover:bg-red-400 flex items-center justify-center border border-red-500/50 shadow-[0_0_10px_rgba(239,68,68,0.4)] transition-all"
               >
                 <X size={8} className="text-red-900 opacity-0 group-hover:opacity-100 transition-opacity" />
               </button>
-              <button 
-                onClick={(e) => { e.stopPropagation(); minimizeWindow(data.id); }} 
+              <button
+                onClick={(e) => { e.stopPropagation(); minimizeWindow(data.id); }}
                 className="w-3 h-3 rounded-full bg-yellow-500/80 hover:bg-yellow-400 flex items-center justify-center border border-yellow-500/50 shadow-[0_0_10px_rgba(234,179,8,0.4)] transition-all"
+                title={isMobile ? 'Home' : 'Minimize'}
               >
                 <Minus size={8} className="text-yellow-900 opacity-0 group-hover:opacity-100 transition-opacity" />
               </button>
-              <button 
-                onClick={(e) => { e.stopPropagation(); maximizeWindow(data.id); }} 
-                className="w-3 h-3 rounded-full bg-green-500/80 hover:bg-green-400 flex items-center justify-center border border-green-500/50 shadow-[0_0_10px_rgba(34,197,94,0.4)] transition-all"
-              >
-                <Square size={6} className="text-green-900 opacity-0 group-hover:opacity-100 transition-opacity" />
-              </button>
+              {!isMobile && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); maximizeWindow(data.id); }}
+                  className="w-3 h-3 rounded-full bg-green-500/80 hover:bg-green-400 flex items-center justify-center border border-green-500/50 shadow-[0_0_10px_rgba(34,197,94,0.4)] transition-all"
+                >
+                  <Square size={6} className="text-green-900 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </button>
+              )}
             </div>
 
             {/* Title */}

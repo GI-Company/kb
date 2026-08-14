@@ -44,6 +44,15 @@ interface OSStore {
   guestRemainingSeconds: number | null;
   guestLimitReached: boolean;
   setGuestUsage: (remainingSeconds: number | null, limitReached: boolean) => void;
+
+  // Below MOBILE_BREAKPOINT, App.tsx/Window.tsx/Taskbar.tsx switch to a
+  // full-screen single-app layout instead of freely draggable/overlapping
+  // windows — kept synced to the real viewport by the resize listener
+  // below rather than read fresh in each component, so every consumer
+  // (including openWindow's own sizing math) agrees on it within the same
+  // render/action, not just "whichever one checked window.innerWidth last".
+  isMobile: boolean;
+  setIsMobile: (v: boolean) => void;
 }
 
 function readLiteModePref(): boolean {
@@ -52,6 +61,12 @@ function readLiteModePref(): boolean {
   } catch {
     return false;
   }
+}
+
+export const MOBILE_BREAKPOINT = 768;
+
+function computeIsMobile(): boolean {
+  return typeof window !== 'undefined' && window.innerWidth < MOBILE_BREAKPOINT;
 }
 
 export const useOS = create<OSStore>((set) => ({
@@ -73,6 +88,8 @@ export const useOS = create<OSStore>((set) => ({
     try { localStorage.setItem('kernos_lite_mode', String(v)); } catch { /* best-effort */ }
     set({ liteMode: v });
   },
+  isMobile: computeIsMobile(),
+  setIsMobile: (v) => set({ isMobile: v }),
 
   openWindow: (appId, title, data) => set((state) => {
     const id = Math.random().toString(36).substring(2, 9);
@@ -92,25 +109,40 @@ export const useOS = create<OSStore>((set) => ({
     const viewportW = typeof window !== 'undefined' ? window.innerWidth : 1280;
     const viewportH = typeof window !== 'undefined' ? window.innerHeight - 52 : 800; // minus taskbar
 
-    // Cap the window's actual size to the viewport too, not just its
-    // position — the fixed per-app sizes above (CDE 1100x700, Local Model
-    // 1020x660, ...) are upper bounds, not requirements. A pure
-    // viewport-minus-margin cap still lets a window eat ~95%+ of a laptop
-    // screen (e.g. CDE's 1100x700 on a 1366x768 display), which reads as
-    // "too large" even though nothing technically overflows — so also cap
-    // to a fraction of the viewport, leaving visible desktop around it.
-    const maxW = Math.min(viewportW - 40, viewportW * 0.82);
-    const maxH = Math.min(viewportH - 40, viewportH * 0.82);
-    width = Math.min(width, maxW);
-    height = Math.min(height, maxH);
+    let x: number;
+    let y: number;
 
-    // Cascade new windows down-right, but wrap around and clamp to the
-    // viewport instead of drifting further off-screen with every open —
-    // previously this grew unbounded (100 + count*20 forever), so the 5th+
-    // window could spawn already partly or fully off-screen.
-    const cascade = state.windows.length % 8;
-    const x = Math.min(80 + cascade * 24, Math.max(20, viewportW - width - 20));
-    const y = Math.min(60 + cascade * 24, Math.max(20, viewportH - height - 20));
+    if (state.isMobile) {
+      // No floating/cascading windows on mobile — every window is
+      // full-screen (Window.tsx renders it edge-to-edge and skips
+      // drag/resize entirely there), so "opening an app" reads as
+      // switching to it, phone-home-screen style. zIndex ordering below
+      // already governs which one is actually visible.
+      width = viewportW;
+      height = viewportH;
+      x = 0;
+      y = 0;
+    } else {
+      // Cap the window's actual size to the viewport too, not just its
+      // position — the fixed per-app sizes above (CDE 1100x700, Local Model
+      // 1020x660, ...) are upper bounds, not requirements. A pure
+      // viewport-minus-margin cap still lets a window eat ~95%+ of a laptop
+      // screen (e.g. CDE's 1100x700 on a 1366x768 display), which reads as
+      // "too large" even though nothing technically overflows — so also cap
+      // to a fraction of the viewport, leaving visible desktop around it.
+      const maxW = Math.min(viewportW - 40, viewportW * 0.82);
+      const maxH = Math.min(viewportH - 40, viewportH * 0.82);
+      width = Math.min(width, maxW);
+      height = Math.min(height, maxH);
+
+      // Cascade new windows down-right, but wrap around and clamp to the
+      // viewport instead of drifting further off-screen with every open —
+      // previously this grew unbounded (100 + count*20 forever), so the 5th+
+      // window could spawn already partly or fully off-screen.
+      const cascade = state.windows.length % 8;
+      x = Math.min(80 + cascade * 24, Math.max(20, viewportW - width - 20));
+      y = Math.min(60 + cascade * 24, Math.max(20, viewportH - height - 20));
+    }
 
     const newWindow: WindowState = {
       id,
@@ -190,3 +222,13 @@ export const useOS = create<OSStore>((set) => ({
     windows: state.windows.map(w => w.id === id ? { ...w, desktopIndex: index } : w)
   }))
 }));
+
+// Kept outside the store body (a plain window listener, not a component
+// effect) so isMobile stays live even though nothing about resizing the
+// browser is itself a store action — every consumer just reads
+// useOS(s => s.isMobile) and re-renders like any other state change.
+if (typeof window !== 'undefined') {
+  window.addEventListener('resize', () => {
+    useOS.getState().setIsMobile(computeIsMobile());
+  });
+}

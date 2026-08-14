@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useOS } from '../../store';
-import { Terminal, Monitor, FileCode, HardDrive, Cpu, Menu, Workflow, Bot, Brain, Sparkles, Activity, Settings, Users, Clock as ClockIcon, X, Pin, PinOff, LogOut, Maximize, Minus, Play, Timer } from 'lucide-react';
+import { Terminal, Monitor, FileCode, HardDrive, Cpu, Menu, Workflow, Bot, Brain, Sparkles, Activity, Settings, Users, Clock as ClockIcon, X, Pin, PinOff, LogOut, Maximize, Minus, Play, Timer, Home, Grid3x3 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useContextMenu } from './ContextMenu';
 import { formatRemaining } from '../../lib/guestUsage';
@@ -99,7 +99,7 @@ const iconForAppId = (appId: string, size = 16) => {
 };
 
 export const Taskbar: React.FC = () => {
-  const { windows, activeWindowId, focusWindow, minimizeWindow, openWindow } = useOS();
+  const { windows, activeWindowId, focusWindow, minimizeWindow, openWindow, isMobile } = useOS();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const { showMenu } = useContextMenu();
@@ -159,6 +159,102 @@ export const Taskbar: React.FC = () => {
   const pinnedApps = pinnedIds
     .map(id => APP_REGISTRY.find(a => a.id === id))
     .filter(Boolean) as typeof APP_REGISTRY;
+
+  // ─── Mobile: thin top status strip + bottom nav bar with a full-screen
+  // app grid instead of the desktop's small floating popover — everything
+  // here uses much larger tap targets (44px+) and drops desktop-only
+  // concepts that don't translate to a phone screen (virtual desktops, the
+  // separate "running windows" strip — moot when only one app is ever
+  // visible at a time, see Window.tsx's full-screen mobile mode). ───────
+  if (isMobile) {
+    const activeWin = windows.find(w => w.id === activeWindowId && !w.isMinimized);
+    const goHome = () => { if (activeWin) minimizeWindow(activeWin.id); };
+
+    return (
+      <>
+        {/* Top status strip */}
+        <div className="h-7 w-full bg-[#0a0a0f]/90 backdrop-blur-2xl flex items-center justify-end gap-2 px-3 z-[9000] absolute top-0 select-none" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
+          <GuestUsageChip />
+          <Clock />
+        </div>
+
+        {/* Bottom nav */}
+        <div
+          className="h-16 w-full bg-[#0a0a0f]/90 backdrop-blur-2xl border-t border-white/5 flex items-center px-2 gap-1 justify-between z-[9000] absolute bottom-0 select-none shadow-[0_-10px_40px_rgba(0,0,0,0.5)]"
+          style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+        >
+          <button
+            onClick={goHome}
+            className="flex flex-col items-center justify-center gap-0.5 w-14 h-12 rounded-xl text-gray-400 active:bg-white/10 active:text-cyan-400 transition-colors"
+            aria-label="Home"
+          >
+            <Home size={20} />
+          </button>
+
+          <div className="flex-1 flex items-center gap-1 overflow-x-auto px-1">
+            {pinnedApps.slice(0, 5).map(app => {
+              const isRunning = windows.some(w => w.appId === app.id);
+              return (
+                <button
+                  key={app.id}
+                  onClick={() => openWindow(app.id as any, app.label)}
+                  className={`relative flex flex-col items-center justify-center gap-0.5 w-14 h-12 shrink-0 rounded-xl transition-colors ${app.color} ${isRunning ? 'bg-white/5' : 'active:bg-white/10'}`}
+                  aria-label={app.label}
+                >
+                  {iconForAppId(app.id, 20)}
+                  <div className={`absolute bottom-1 w-1 h-1 rounded-full ${isRunning ? 'bg-cyan-400 shadow-[0_0_6px_rgba(0,240,255,0.8)]' : 'bg-transparent'}`} />
+                </button>
+              );
+            })}
+          </div>
+
+          <button
+            onClick={() => setMenuOpen(true)}
+            className="flex flex-col items-center justify-center gap-0.5 w-14 h-12 rounded-xl text-cyan-400 active:bg-white/10 transition-colors"
+            aria-label="All Apps"
+          >
+            <Grid3x3 size={20} />
+          </button>
+        </div>
+
+        {/* Full-screen app grid */}
+        <AnimatePresence>
+          {menuOpen && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0, transition: { duration: 0.15 } }}
+              className="fixed inset-0 z-[9500] bg-[#0a0a0f]/98 backdrop-blur-2xl flex flex-col"
+              style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
+            >
+              <div className="flex items-center justify-between px-5 pt-4 pb-2">
+                <span className="text-xs font-mono uppercase tracking-widest text-gray-500">Applications</span>
+                <button onClick={() => setMenuOpen(false)} className="p-2 -mr-2 text-gray-400 active:text-white" aria-label="Close">
+                  <X size={22} />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto grid grid-cols-4 gap-2 p-4 content-start">
+                {APP_REGISTRY.map(app => {
+                  const isPinned = pinnedIds.includes(app.id);
+                  return (
+                    <button
+                      key={app.id}
+                      onClick={() => { openWindow(app.id as any, app.label); setMenuOpen(false); }}
+                      onContextMenu={(e) => { e.preventDefault(); togglePin(app.id); }}
+                      className="flex flex-col items-center gap-1.5 p-3 rounded-xl active:bg-white/10 transition-colors"
+                    >
+                      <span className={`${app.color} ${isPinned ? 'opacity-100' : 'opacity-70'}`}>{iconForAppId(app.id, 28)}</span>
+                      <span className="text-[10px] text-gray-400 text-center leading-tight font-mono">{app.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </>
+    );
+  }
 
   return (
     <motion.div 

@@ -2,7 +2,15 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#050505" />
+    <!-- Lets a phone's "Add to Home Screen" launch this full-screen, no
+         browser chrome — closer to the "portable computer" framing than a
+         regular tab, and iOS/Android both still respect a user's own
+         pinch-zoom accessibility gesture regardless of maximum-scale above. -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Kernos OS</title>
     <!--
       Fonts and Tailwind are bundled locally (index.css, via @tailwindcss/vite)
