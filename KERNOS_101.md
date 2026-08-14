@@ -1,187 +1,146 @@
-# KernOS 101 — The Complete Beginner's Guide
+# Kernos + BNLM 101 — The Complete Beginner's Guide
 
-> **KernOS** is an AI-native operating system that runs entirely in your browser. The AI isn't an app — it **is** the kernel.
+> This is a browser-based AI workspace. Six Groq-backed agent personas live in the Chat app; a real, from-scratch trainable language model lives in the Local Model app and runs entirely in your tab — no GPU, no server round trip for inference.
 
 ---
 
-## 🚀 Quick Start (60 Seconds)
+## 🚀 Quick Start (2 minutes)
 
 ```bash
-# 1. Prerequisites: Install LM Studio and load these models:
-#    - mistralai/codestral-22b-v0.1 (LLM)
-#    - text-embedding-nomic-embed-text-v1.5 (Embeddings)
-
-# 2. Build & Boot
-cd server
-go build -o kernos_server
-./kernos_server
-
-# 3. Open the browser URL shown in the boot banner
-#    Default: http://127.0.0.1:8080
-
-# 4. Authenticate with the Root Token printed in the terminal
+git clone https://github.com/GI-Company/kb.git
+cd kb
+npm install
+cp .env.example .env.local
 ```
 
-That's it. You now have a fully operational AI operating system.
+Edit `.env.local`:
+
+```
+GROQ_API_KEY=your-key-from-console.groq.com/keys
+GROQ_MODEL=llama-3.3-70b-versatile
+```
+
+```bash
+npm run dev
+```
+
+Open `http://localhost:3000`. That's it — no backend binary to build or run separately. Locally, a small dev-only Vite plugin runs the same `api/*.ts` functions Vercel would run in production, in-process.
 
 ---
 
-## 🧠 What Makes KernOS Different?
+## 🧠 What Makes This Different?
 
-| Traditional OS | KernOS |
+| Typical AI app | This |
 |---|---|
-| AI is an app you open | AI **is** the kernel |
-| File search by name | File search by **meaning** (vector similarity) |
-| Tasks crash on failure | Tasks **self-heal** via DAG mutation |
-| Static memory | Memory **decays and reinforces** like a brain |
-| Cloud-dependent AI | **100% offline**, runs on local models |
+| One model does everything | Six Groq personas (fast triage vs. deep review vs. chat vs. security vs. devops vs. code review) share one Groq-hosted model, distinguished only by system prompt |
+| "Local AI" means a big model you have to install | A small model trains from random initialization **in the browser tab itself**, in seconds, on whatever text you paste in |
+| Trained state is a session toy | Trained models can be **saved by name** and reloaded after a refresh (IndexedDB) |
+| Cloud-only or offline-only | Both: Groq for fast/capable reasoning, BNLM for a zero-cost, offline-capable local specialist the agents can direct |
 
 ---
 
 ## 🏗️ Architecture at a Glance
 
 ```
-┌─────────────────────────────────────────────────┐
-│                  BROWSER UI (React)              │
-│  Terminal │ AI Chat │ VFS │ Task Runner │ Metrics │
-├─────────────────────────────────────────────────┤
-│              WebSocket IPC Envelope Bus           │
-├─────────────────────────────────────────────────┤
-│                 GO MICROKERNEL                    │
-│  ┌──────────┐ ┌──────────┐ ┌──────────────────┐ │
-│  │ 6 AI     │ │ Task     │ │ Vector Engine    │ │
-│  │ Agents   │ │ Engine   │ │ (GraphRAG)       │ │
-│  ├──────────┤ ├──────────┤ ├──────────────────┤ │
-│  │Codestral │ │ DAG Exec │ │ Nomic Embeddings │ │
-│  │  22B     │ │ + Mutex  │ │ + SQLite Graph   │ │
-│  └──────────┘ └──────────┘ └──────────────────┘ │
-├─────────────────────────────────────────────────┤
-│  LM Studio (Local)  │  SQLite (sys.db, vectors) │
-└─────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                   BROWSER (the "OS")                       │
+│  Terminal │ AI Chat │ Local Model │ Editor │ Files │ CDE    │
+├───────────────────────────────────────────────────────────┤
+│         services/kernel.ts (client-side pub/sub bus)       │
+├──────────────────────────┬──────────────────────────────────┤
+│   lib/localModel.ts       │        fetch()                  │
+│   → src/bnlm/* (runs      │                                  │
+│     entirely in this tab) │                                  │
+└──────────────────────────┴──────────────┬───────────────────┘
+                                           ▼
+                          POST /api/chat  │  POST /api/exec
+                          (Vercel Edge)   │  (Vercel Node)
+                                ▼          ▼
+                          Groq Chat API   ephemeral sandboxed
+                                          exec, fresh /tmp jail
 ```
+
+Full detail: [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ---
 
 ## 🤖 The 6 AI Agents
 
-Every agent runs on **Codestral 22B** via LM Studio and communicates through the IPC Envelope Bus.
+Every agent shares one Groq-hosted model (`GROQ_MODEL`) and is distinguished purely by its system prompt (`lib/agents.ts`):
 
 | Agent | Role | What It Does |
 |---|---|---|
-| **Dispatcher** | Triage | Converts user requests into executable Task DAGs |
-| **Architect** | Validation | Reviews DAGs for safety, cycles, and injection risks |
-| **Kernos Assistant** | Chat | Conversational AI companion — never generates DAGs |
-| **Code Review** | Quality | Reviews code for bugs, performance, and best practices |
-| **Security Auditor** | Defense | Scans for vulnerabilities, injection, and hardcoded secrets |
-| **DevOps Engineer** | Infra | Handles deployment, CI/CD, and system administration |
+| **Dispatcher** | Triage | Fast responses; can direct the Local Model (BNLM) tool; also translates natural-language terminal input (`? find large files`) into a shell command |
+| **Architect** | Review | Reviews task/DAG plans for safety and correctness |
+| **Kernos Assistant** | Chat | Default conversational agent; can also direct the Local Model tool |
+| **DevOps Engineer** | Infra | Deployment/CI/CD advice, scoped to what this sandboxed terminal can actually run |
+| **Security Auditor** | Defense | Code security review, vulnerability scanning |
+| **Code Review** | Quality | Bug/perf/readability review, can read attached images |
 
 ---
 
-## 💻 Terminal Commands
+## 🧬 The Local Model App (BNLM)
 
-Type `help` in the terminal to see all available commands. Here are the highlights:
+Open **Local Model (BNLM)** from the taskbar. The loop:
 
-```
-📁 FILE OPS      ls, cat, head, tail, find, tree, cp, mv, diff
-📝 TEXT           echo, grep, sed, awk, cut, jq
-🖥️ SYSTEM         uname, uptime, df, du, ps, pwd, whoami
-🌐 NETWORK        ping, curl, dig, nslookup
-🛠️ DEV TOOLS      git, go, node, npm, python3, make, cargo
-📦 ARCHIVE        tar, gzip, zip, unzip
-```
+1. **Get training text.** Paste your own, or click **Generate** next to "Generate dataset with Groq" — give it a topic and it'll ask Groq to write a short-story training set in the right format (blank-line-separated documents).
+2. **Set hyperparameters.** `d_model`, `layers`, `heads`, `context`, mixer type (`attention` / `linear` / `rwkv`), and `workers` (>1 fans training out across data-parallel Web Workers instead of running on the main thread).
+3. **Initialize**, then **Train**. Watch the loss sparkline drop in real time.
+4. **Generate** from it, or **Export Int8** for a quantized inference-only `.qlm1` file you can download.
+5. **Save** it by name — it'll show up in **Saved Models** and reload (weights, tokenizer vocab, and training text) even after you close the tab.
 
-All commands run inside a **sandboxed jail** — no command can access the host filesystem directly.
+Every run and generation is logged to the **Run History** / **Generations** tabs at the bottom, persisted across reloads.
+
+You can also drive all of this from **AI Chat** — ask the Dispatcher or Kernos Assistant to "train a model on this text about X" or "generate from the local model," and it'll do it and report back in the same conversation.
 
 ---
 
-## 🕸️ Core Features
+## 💻 Terminal
 
-### 1. Semantic VFS (Virtual File System)
-Search your codebase by **meaning**, not just filenames. The Vector Engine continuously indexes your workspace using Nomic embeddings, so searching "authentication logic" returns the actual auth files — even if they're named `sysdb.go`.
+Real command execution, allowlisted and sandboxed — each command runs in a fresh Vercel function invocation with its own temp jail, stripped environment, and a hard timeout. The allowlist is deliberately conservative (coreutils + `node`/`npm`/`npx`) since Vercel's Node runtime doesn't ship git/python/go/rust/ffmpeg the way a real host would; `api/exec.ts` also checks each command actually exists before running it, so an allowlisted-but-missing command fails cleanly instead of 500ing.
 
-### 2. GraphRAG (Knowledge Graph)
-While you work, the **GraphBuilder daemon** reads your source code in the background, extracts entities (functions, structs, modules) and their relationships, and stores them in a SQLite knowledge graph. When the Architect Agent makes decisions, it traverses this graph for deep context.
-
-### 3. Self-Healing DAG Execution
-When a task fails, the system doesn't just throw an error:
-1. The **Architect** queries the Knowledge Graph for similar past failures
-2. It synthesizes **two alternative recovery commands**
-3. Both branches **race in parallel** inside secure sandboxes
-4. The winning branch is **grafted back** into the live DAG
-
-### 4. Synaptic Memory (Hebbian Learning)
-Every piece of indexed code has a **synaptic weight** that:
-- **Decays** over time (like human memory forgetting unused information)
-- **Reinforces** when accessed (frequently-used context gets boosted)
-- Is governed by the equation: `W_new = W_old × e^(-λ × Δt)`
-
-### 5. Neuroplasticity Engine
-Three concurrent learning pipelines run in the background:
-- **Pipeline 1:** Reward Signals (4 workers)
-- **Pipeline 2:** Error Pattern Recognition (2 workers)
-- **Pipeline 3:** Embedding Ingestion (3 workers)
+Prefix input with `?` for natural-language translation (`? show large files` → the Dispatcher translates it to a real command and runs it).
 
 ---
 
 ## 🔐 Security Model
 
-KernOS uses a **Zero-Trust** architecture:
-
-- **Root Token** — Generated on first boot, stored in `~/.kernos/sys.db`
-- **JWT Sessions** — Ephemeral session cookies with 30-day expiry
-- **3-Second Auth Timeout** — Unauthenticated WebSocket connections are killed
-- **Command Allowlist** — Only explicitly whitelisted commands can execute
-- **Sandboxed Jails** — Every command runs in an isolated temp directory
-- **Input Sanitization** — Blocks `&`, `|`, `;`, `` ` ``, `$`, `()`, `<`, `>` characters
-- **Path Traversal Protection** — `..` and absolute paths are rejected
+- **Command allowlist + argument sanitization** — rejects `& | ; \` $ ( ) < >`, path traversal (`..`), and absolute paths, same rules as the original design
+- **Fresh sandbox per command** — a `mkdtemp`'d temp dir per invocation, stripped environment, hard timeout
+- **`GROQ_API_KEY` stays server-side** — only `api/chat.ts` (an Edge function) ever sees it
+- **No accounts in v1** — single "guest" identity, no passwords stored anywhere; a real account system (Supabase Auth) is a planned follow-up, not built yet
 
 ---
 
 ## 📁 Project Structure
 
 ```
-aether-os/
-├── server/                  # Go backend (the kernel)
-│   ├── main.go              # Core server, IPC bus, WebSocket handler
-│   ├── task_engine.go       # DAG executor + self-healing mutation
-│   ├── vector_engine.go     # Semantic vector DB + embeddings
-│   ├── vector_graph_builder.go  # GraphRAG entity extractor
-│   ├── embedded_agents.go   # AI agent orchestration
-│   ├── neuroplasticity.go   # Concurrent learning pipelines
-│   ├── sysdb.go             # Persistent auth + config DB
-│   ├── consolidation.go     # RLHF consolidation engine
-│   └── agents.yaml          # Agent configuration
-├── apps/                    # React UI applications
-│   ├── Terminal.tsx          # Terminal emulator
-│   ├── AIChat.tsx            # AI chat interface
-│   ├── SemanticVFS.tsx       # Semantic file browser
-│   ├── TaskRunner.tsx        # DAG visualization
-│   └── SystemMetrics.tsx     # System monitoring
-├── components/ui/           # Shared UI components
-├── store.ts                 # Zustand state management
-├── types.ts                 # TypeScript type definitions
-└── ARCHITECTURE.md          # Technical architecture doc
+kernos-bnlm/
+├── App.tsx, store.ts, types.ts    # window manager, desktop, taskbar
+├── apps/                          # Terminal, AIChat, LocalModel, Editor, FileSystem, CDE, ...
+├── components/                    # boot sequence, window chrome, context menus
+├── services/kernel.ts             # client-side bus + fetch adapter
+├── lib/
+│   ├── agents.ts                  # the 6 personas
+│   ├── localModel.ts              # BNLM engine wrapper
+│   ├── modelRegistry.ts           # IndexedDB named-model persistence
+│   ├── localModelHistory.ts       # run/generation history
+│   ├── vfs.ts, chatStore.ts       # client-side virtual FS + chat history
+├── src/bnlm/                      # the vendored BNLM engine
+└── api/
+    ├── chat.ts                    # Groq streaming proxy (Edge)
+    └── exec.ts                    # ephemeral sandboxed exec (Node)
 ```
 
 ---
 
 ## 🔧 Configuration
 
-### Changing the LLM Model
-Edit `server/agents.yaml` and update the `model:` field for each agent:
-```yaml
-model: "mistralai/codestral-22b-v0.1"  # Current
-model: "qwen/qwen3.5-9b"               # Alternative (lighter)
-```
+Everything is env vars, set in `.env.local` for dev or the Vercel project settings for production:
 
-### Changing the LM Studio URL
-```bash
-./kernos_server -lm http://localhost:1234/v1/chat/completions
 ```
-
-### Changing the Workspace Directory
-```bash
-./kernos_server -workspace /path/to/your/project
+GROQ_API_KEY=...      # required — never exposed to the client
+GROQ_MODEL=...        # optional, defaults to llama-3.3-70b-versatile
 ```
 
 ---
@@ -189,21 +148,14 @@ model: "qwen/qwen3.5-9b"               # Alternative (lighter)
 ## 🧪 Running Tests
 
 ```bash
-cd server
-go test -v -race -timeout 30s ./...
+npm test
 ```
 
-Tests use `TestingMode` to bypass live LLM calls and run entirely offline.
+Runs the Vitest suite (component tests under `apps/*.test.tsx`, `components/**/*.test.tsx`).
 
 ---
 
 ## 📖 Further Reading
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — Technical deep-dive into the layered stack
-- [KERNOS_OS_WHITEPAPER.md](KERNOS_OS_WHITEPAPER.md) — The Unconventional Trinity
-- [KERNOS_OS_RESEARCH_PAPER.md](KERNOS_OS_RESEARCH_PAPER.md) — Academic treatment
-- [KERNOS_OS_VALUATION.md](KERNOS_OS_VALUATION.md) — Market analysis and commercialization
-
----
-
-*Built with Go, React, SQLite, Codestral 22B, and Nomic Embeddings. Zero cloud dependencies.*
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — the current stack, and what changed from the original Go-backed design
+- [KERNOS_OS_WHITEPAPER.md](./KERNOS_OS_WHITEPAPER.md), [KERNOS_OS_RESEARCH_PAPER.md](./KERNOS_OS_RESEARCH_PAPER.md), [KERNOS_OS_VALUATION.md](./KERNOS_OS_VALUATION.md) — narrative/portfolio documents

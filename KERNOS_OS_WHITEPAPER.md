@@ -1,68 +1,51 @@
-# KERNOS OS: The Cognitive Microkernel
+# Kernos + BNLM: Cloud Reasoning, Local Execution
 
-## Abstract & Theoretical Framework
-**Revision:** 2.0.0-FINAL
-**Date of Publication:** March 2026
+## Abstract & Framework
+**Revision:** 3.0.0 — Groq/Vercel/BNLM merge
+**Date:** March 2026
 **Author:** Kernos Foundation
 
-### 1. The Death of the Dumb Terminal
-For fifty years, operating systems have functioned as deterministic state machines. From UNIX to Windows, the OS waits for an explicit command, executes it, and returns the output. Historically, Artificial Intelligence has been integrated as an external application layer entirely disconnected from the kernel's process scheduler, memory manager, and filesystem.
+### 1. From "AI Kernel" to "AI Workspace"
 
-**Kernos OS explores an alternative paradigm.** It is a browser-based operating system simulation built with a Go microkernel and a React frontend. The primary research goal is to demonstrate how cognitive routing, vector memory, and speculative execution can be integrated directly into the kernel's IPC layer, transforming the computing device into an anticipating intellectual partner.
+The original Kernos OS explored a specific, ambitious idea: an operating system whose kernel itself reasoned about user intent, built as a persistent Go process with embedded local LLMs, a vector-graph memory, and speculative execution. That required a binary running on the user's own machine.
 
----
-
-## 2. The Unconventional Trinity Architecture
-
-Kernos OS Abandons POSIX conventions in favor of the **Unconventional Trinity**:
-
-### I. The Synaptic Vector Graph (Digital Memory)
-Traditional operating systems use hierarchical folder structures (e.g., `/usr/bin/`, `C:\Windows`). This is an archaic data structure. Humans do not remember information by alphabetical paths. 
-Kernos OS replaces the File Allocation Table with a **Synaptic Vector Graph**. Every file, command output, and system configuration is continuously ingested into a 768-dimensional latent space using embedded Nomic text embeddings. 
-**The Result:** The OS experiences "Digital Memory." The user does not ask "where is file X?" The OS already knows, because the mathematical resonance between the user's current task and the historical file brings the memory to the forefront of the cognitive context window before the user explicitly requests it.
-
-### II. GraphRAG & Speculative Execution (Zero-Latency Anticipation)
-In addition to traditional vector search, Kernos OS utilizes **GraphRAG**. A background Qwen3.5-9B daemon continuously reads Nomic-vectorized text chunks and extracts structural entities and relationships into a SQLite Knowledge Graph. This provides the Architect Agent with omniscient network topology awareness of the entire codebase, eliminating "lost in the middle" context collapse.
-Simultaneously, rather than waiting for user input, the Dispatcher Agent evaluates partial keystrokes and context to synthesize probable next commands, executing them in an isolated 10-second `tmp` jail. If the user hits 'Enter' on the predicted command, the kernel returns the pre-computed `stdout` instantly via "Speculative Execution".
-
-### III. Shared Memory Contexts & Concurrent DAG Mutation
-Sequential bash scripts are inherently brittle. Kernos approaches multi-step operations using Directed Acyclic Graphs (DAGs) orchestrated by an autonomous Task Engine. To ensure true pipeline cohesion, the OS implements **Shared Memory Contexts**, where node `stdout` is securely injected into downstream sandbox execution environments via `$CTX_<nodeID>_OUT` environment variables.
-If an intermediate node fails, the Task Engine prompts the Architect to synthesize divergent recovery paths. The engine executes these branches concurrently in separate goroutines. The first branch to exit successfully collapses the state (a parallel race-condition), dynamically grafting the winning node into the DAG.
-
-### IV. Contrastive RLHF (Scalar Reward Memory)
-To ensure the system improves over time, Kernos utilizes a nightly consolidation routine. Every executed DAG is logged into a local SQLite database with a scalar reward (+1.0 for success, -1.0 for failure/timeout). 
-During idle periods, the Architect Agent analyzes these trajectories, contrasting the high-reward "Golden Paths" against the negative-reward "Anti-Patterns." It synthesizes these gradients into actionable structural rules, appending them directly to the system prompt matrix of all embedded agents to permanently alter their behavior.
+This version keeps the browser-native desktop shell — the window manager, the taskbar, the terminal, the boot sequence — but replaces the persistent Go "kernel" with a stateless Vercel deployment, and replaces "AI as the kernel" with something more specific and more honest: **a fast cloud reasoning layer (Groq) that can direct a genuinely local, genuinely trainable model (BNLM) running in the same browser tab.** It is an AI workspace, not an AI operating system — a narrower claim, backed by more of what's actually built working end-to-end.
 
 ---
 
-## 3. The 19MB Single-Binary Distribution
+## 2. The Two-Model Architecture
 
-Kernos OS proves that cognitive computing does not require bloat. The entire environment compiles into a **19 MB statically-linked binary** via Go `//go:embed`.
+### I. Groq: Multi-Persona Cloud Reasoning
+Six agent personas — Dispatcher, Architect, Kernos Assistant, DevOps Engineer, Security Auditor, Code Review — route through a single Groq-hosted model, distinguished by system prompt rather than separate model instances. This trades per-agent model diversity for near-instant inference and zero local infrastructure. Streaming responses arrive as a simplified newline-delimited JSON protocol from `api/chat.ts` (a Vercel Edge function), which the client reassembles into the same `agent.chat:stream` / `agent.chat:reply` envelope pattern the UI always expected.
 
-Inside this single binary lives:
-1. The WebSocket IPC Message Bus
-2. The Go-SQLite RLHF Telemetry Database
-3. The Nomic Vector Search Engine
-4. The React-based Graphical Desktop Environment
-5. The Speculative Execution "Shadow" Engine
+### II. BNLM: A Model That Actually Runs Locally
+`src/bnlm/` is a decoder-only Transformer with a hand-rolled reverse-mode autograd engine, three selectable causal token-mixers (softmax attention with KV-cache generation, causal linear attention with O(1)-memory recurrent generation, and an RWKV-v4-style recurrent mixer), a WGSL compute shader for GPU-accelerated matmuls with automatic CPU fallback, and a standard Adam optimizer — all initializing, training, and generating entirely inside the browser tab. Training can run on the main thread or fan out across `numWorkers` Web Workers, synchronously averaging gradients before each optimizer step. Trained models are named and persisted to IndexedDB, surviving reloads — not a session-scoped demo toy.
 
-The user hits a local URL (`http://localhost:3000`), and a full Window Manager, Code Editor, and Subsystem Telemetry dashboard launches inside the browser. By rendering the desktop in the DOM and isolating actual execution to the Go backend, Kernos OS attains zero-trust sandboxing.
+### III. The Tool-Call Bridge
+Two personas (Dispatcher, Kernos Assistant) carry an additional contract: when a request calls for training or sampling a local model, they emit a fenced JSON tool block (`bnlm.train` / `bnlm.generate`) instead of, or alongside, a normal reply. The client parses this out of the streamed response and executes it directly against `lib/localModel.ts`, then reports the outcome back into the same conversation. This is the literal mechanism by which "the cloud model directs the local model" — no separate orchestration service, just a parsed block in an otherwise-normal chat reply.
 
 ---
 
-## 4. WebRTC Peer-to-Peer Data Channels
+## 3. Deployment Model: Stateless by Design
 
-Kernos OS implements decentralized collaboration via direct **P2P WebRTC DataChannels**. 
-The Go backend (`p2p_gateway.go`) acts as a signaling relay, allowing two browser clients to exchange ICE candidates and SDP offers/answers using a 4-digit PIN. Once the connection is established, the WebRTC channel bridges the WebSocket buses of the two distinct OS instances. A command typed in a shared terminal on User A's machine executes simultaneously on User B's machine, governed by strict topic allowlists. 
+The entire app — the React shell, the Groq proxy, the exec sandbox — deploys as a single Vercel project with no server to provision. `api/chat.ts` runs on the Edge runtime for low-latency streaming; `api/exec.ts` runs on the Node runtime (it needs `child_process`) with a `mkdtemp`'d jail per invocation, a stripped environment, argument sanitization against shell metacharacters and path traversal, and a hard timeout matching the function's execution budget. Neither function retains state between invocations — every piece of state that needs to persist (chat history, the virtual filesystem, trained model weights) lives in the browser via localStorage or IndexedDB instead of a server-side database.
 
----
-
-## 5. Epistemological Security (The Shadow DOM)
-
-Security in Kernos OS is handled via **Capability Hashes** attached to every JSON `Envelope` on the kernel bus. Furthermore, third-party user applets are compiled natively via embedded `esbuild` and executed inside a strict `ShadowRoot` DOM jail. This ensures zero data bleed. Applets cannot read the OS state unless explicitly granted semantic access.
+`vercel.json` sets `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`, required for the `SharedArrayBuffer` BNLM's parallel training workers use — which is also why Tailwind and web fonts are bundled locally rather than pulled from a CDN, since cross-origin resources get blocked under `require-corp` without a matching `Cross-Origin-Resource-Policy` header.
 
 ---
 
-## 6. The Verdict: Intelligent Subconscious Infrastructure
+## 4. What Didn't Survive the Move to Stateless, and Why
 
-Kernos OS is not an operating system *with* AI. It is an operating system *made of* AI. By sinking cognitive routing, vector embedding, and DAG mutation into the very bottom layers of the Kernel, Kernos transforms the computing device from a passive tool into an active, anticipating intellectual partner. 
+The original design's most ambitious subsystems — GraphRAG semantic memory over a SQLite vector-graph, a WebRTC P2P collaboration layer, a speculative "shadow jail" command-prediction cache, and a nightly RLHF consolidation pipeline running as background goroutines — all assumed a long-lived process holding growing in-memory and on-disk state. None of that exists on a stateless function platform by construction, not by oversight. They're documented as explicit cuts in [ARCHITECTURE.md](./ARCHITECTURE.md) rather than silently dropped, each with the specific persistent-state dependency that makes it incompatible with this deployment target.
+
+---
+
+## 5. Security Model
+
+Security now centers on two boundaries instead of one. The exec sandbox (`api/exec.ts`) keeps the original design's allowlist-plus-sanitization approach — reject shell metacharacters, reject `..` and absolute paths, run in an isolated temp directory with a stripped environment — but the allowlist itself had to shrink to match what a Vercel Node function's minimal Linux image actually ships, with a live existence check per command rather than assuming host parity. The Groq API boundary is new: `GROQ_API_KEY` is read only inside `api/chat.ts`, an Edge function, and is never included in any response sent to the client — the key cannot leak through normal application use, only through misconfiguration of the Vercel project itself.
+
+---
+
+## 6. The Verdict
+
+Kernos + BNLM is not an operating system with AI bolted on, and it no longer claims to be an AI kernel. It's a browser-native workspace where a fast, capable cloud reasoner and a small, genuinely local, genuinely trainable model compose through one tool-call contract — a narrower claim than the original vision, and a more fully working one.

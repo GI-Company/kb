@@ -1,6 +1,8 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { localModel, DEFAULT_LOCAL_MODEL_CONFIG, MixerType } from '../lib/localModel';
-import { Cpu, Play, Sparkles, Download, RotateCcw, Loader2 } from 'lucide-react';
+import { runHistoryStore, genHistoryStore, RunHistoryEntry, GenHistoryEntry } from '../lib/localModelHistory';
+import { SavedModelMeta } from '../lib/modelRegistry';
+import { Cpu, Play, Sparkles, Download, RotateCcw, Loader2, Save, FolderOpen, Trash2, Wand2 } from 'lucide-react';
 
 const SAMPLE_CORPUS = `Once upon a time, there was a small robot named Kip. Kip lived in a workshop full of gears and wires.
 
@@ -11,6 +13,42 @@ The bird and Kip became best friends. Every morning, the bird would sing, and Ki
 When the bird's wing healed, it flew to the top of the workshop and looked back at Kip. Then it flew down, landed on Kip's shoulder, and stayed.`;
 
 interface LogLine { id: string; text: string; kind: 'info' | 'error' | 'success' }
+type BottomTab = 'log' | 'runs' | 'generations';
+
+/** Talks to /api/chat directly (not through the kernel bus — this isn't a chat-UI message, just a one-off content generation call) and returns the accumulated text. */
+async function generateDatasetViaGroq(topic: string, count: number): Promise<string> {
+  const res = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      agentId: 'agent-coder',
+      message: `Generate exactly ${count} short children's stories in the TinyStories style (simple sentences, small vocabulary, 4-8 sentences each) about: ${topic}. Separate each story with a single blank line. Output ONLY the stories themselves — no titles, no numbering, no markdown formatting, no commentary before or after.`,
+    }),
+  });
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || res.statusText);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let full = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let parsed: any;
+      try { parsed = JSON.parse(line); } catch { continue; }
+      if (parsed.error) throw new Error(parsed.error);
+      if (parsed.chunk) full += parsed.chunk;
+    }
+  }
+  return full.trim();
+}
 
 export const LocalModelApp: React.FC = () => {
   const [corpus, setCorpus] = useState(SAMPLE_CORPUS);
@@ -18,12 +56,14 @@ export const LocalModelApp: React.FC = () => {
   const [numLayers, setNumLayers] = useState(DEFAULT_LOCAL_MODEL_CONFIG.numLayers);
   const [numHeads, setNumHeads] = useState(DEFAULT_LOCAL_MODEL_CONFIG.numHeads);
   const [contextLen, setContextLen] = useState(DEFAULT_LOCAL_MODEL_CONFIG.contextLen);
+  const [numWorkers, setNumWorkers] = useState(DEFAULT_LOCAL_MODEL_CONFIG.numWorkers);
   const [mixerType, setMixerType] = useState<MixerType>(DEFAULT_LOCAL_MODEL_CONFIG.mixerType);
   const [steps, setSteps] = useState(200);
   const [prompt, setPrompt] = useState('Once upon a time');
   const [maxTokens, setMaxTokens] = useState(80);
 
   const [isReady, setIsReady] = useState(localModel.isReady);
+  const [isInitializing, setIsInitializing] = useState(false);
   const [isTraining, setIsTraining] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [modelInfo, setModelInfo] = useState<{ vocabSize: number; paramCount: number; documents: number } | null>(null);
@@ -33,6 +73,19 @@ export const LocalModelApp: React.FC = () => {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  const [bottomTab, setBottomTab] = useState<BottomTab>('log');
+  const [runHistory, setRunHistory] = useState<RunHistoryEntry[]>([]);
+  const [genHistory, setGenHistory] = useState<GenHistoryEntry[]>([]);
+
+  const [datasetTopic, setDatasetTopic] = useState('a small robot who makes a new friend');
+  const [datasetCount, setDatasetCount] = useState(6);
+  const [isGeneratingDataset, setIsGeneratingDataset] = useState(false);
+
+  const [savedModels, setSavedModels] = useState<SavedModelMeta[]>([]);
+  const [saveName, setSaveName] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [isLoadingModel, setIsLoadingModel] = useState(false);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
@@ -41,24 +94,41 @@ export const LocalModelApp: React.FC = () => {
     setLogs(prev => [...prev.slice(-199), { id: Math.random().toString(36), text, kind }]);
   }, []);
 
-  const handleInit = () => {
+  const refreshHistory = useCallback(() => {
+    setRunHistory(runHistoryStore.list());
+    setGenHistory(genHistoryStore.list());
+  }, []);
+
+  const refreshSavedModels = useCallback(() => {
+    localModel.listSaved().then(setSavedModels).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refreshHistory();
+    refreshSavedModels();
+  }, [refreshHistory, refreshSavedModels]);
+
+  const handleInit = async () => {
+    setIsInitializing(true);
     try {
-      const result = localModel.init(corpus, { dModel, numLayers, numHeads, contextLen, mixerType });
+      const result = await localModel.init(corpus, { dModel, numLayers, numHeads, contextLen, mixerType, numWorkers });
       setModelInfo(result);
       setIsReady(true);
       setLossHistory([]);
       setLastLoss(null);
       setGenerated('');
-      log(`Model initialized: mixer=${mixerType}, d_model=${dModel}, layers=${numLayers}, heads=${numHeads}, context=${contextLen}, params=${result.paramCount.toLocaleString()}, vocab=${result.vocabSize}, stories=${result.documents}`, 'success');
+      log(`Model initialized: mixer=${mixerType}, d_model=${dModel}, layers=${numLayers}, heads=${numHeads}, context=${contextLen}, workers=${numWorkers}, params=${result.paramCount.toLocaleString()}, vocab=${result.vocabSize}, stories=${result.documents}`, 'success');
     } catch (err: any) {
       log(`ERROR: ${err?.message || err}`, 'error');
+    } finally {
+      setIsInitializing(false);
     }
   };
 
   const handleTrain = async () => {
     if (!isReady) { log('Initialize the model first.', 'error'); return; }
     setIsTraining(true);
-    log(`Training ${steps} steps...`);
+    log(`Training ${steps} steps${numWorkers > 1 ? ` across ${numWorkers} workers` : ''}...`);
     try {
       const result = await localModel.train(steps, (step, loss) => {
         if (step % 10 === 0 || step === steps) {
@@ -68,6 +138,7 @@ export const LocalModelApp: React.FC = () => {
       });
       setLastLoss(result.finalLoss);
       log(`Finished ${result.steps} steps. Final loss: ${result.finalLoss.toFixed(4)}`, 'success');
+      refreshHistory();
     } catch (err: any) {
       log(`ERROR: ${err?.message || err}`, 'error');
     } finally {
@@ -82,6 +153,7 @@ export const LocalModelApp: React.FC = () => {
       const result = await localModel.generate(prompt, maxTokens);
       setGenerated(result.text);
       log(`Generated ${result.tokensGenerated} tokens.`, 'success');
+      refreshHistory();
     } catch (err: any) {
       log(`ERROR: ${err?.message || err}`, 'error');
     } finally {
@@ -104,18 +176,106 @@ export const LocalModelApp: React.FC = () => {
     }
   };
 
+  const handleGenerateDataset = async () => {
+    setIsGeneratingDataset(true);
+    log(`Asking Groq to generate ${datasetCount} training stories about "${datasetTopic}"...`);
+    try {
+      const text = await generateDatasetViaGroq(datasetTopic, datasetCount);
+      if (!text) throw new Error('Groq returned an empty response.');
+      setCorpus(text);
+      log(`Groq generated a new training corpus (${text.length} chars). Review it below, then Initialize.`, 'success');
+    } catch (err: any) {
+      log(`ERROR generating dataset: ${err?.message || err}`, 'error');
+    } finally {
+      setIsGeneratingDataset(false);
+    }
+  };
+
+  const handleSaveModel = async () => {
+    const name = saveName.trim();
+    if (!name) { log('Enter a name to save this model as.', 'error'); return; }
+    setIsSaving(true);
+    try {
+      await localModel.saveAs(name);
+      log(`Saved model as "${name}".`, 'success');
+      setSaveName('');
+      refreshSavedModels();
+    } catch (err: any) {
+      log(`ERROR saving model: ${err?.message || err}`, 'error');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleLoadModel = async (name: string) => {
+    setIsLoadingModel(true);
+    try {
+      const result = await localModel.loadSaved(name);
+      const cfg = localModel.currentConfig;
+      setCorpus(localModel.currentCorpusText);
+      setDModel(cfg.dModel);
+      setNumLayers(cfg.numLayers);
+      setNumHeads(cfg.numHeads);
+      setContextLen(cfg.contextLen);
+      setNumWorkers(cfg.numWorkers);
+      setMixerType(cfg.mixerType);
+      setModelInfo(result);
+      setIsReady(true);
+      setLossHistory([]);
+      setLastLoss(null);
+      setGenerated('');
+      log(`Loaded model "${name}": ${result.paramCount.toLocaleString()} params, vocab ${result.vocabSize}.`, 'success');
+    } catch (err: any) {
+      log(`ERROR loading model: ${err?.message || err}`, 'error');
+    } finally {
+      setIsLoadingModel(false);
+    }
+  };
+
+  const handleDeleteModel = async (name: string) => {
+    try {
+      await localModel.deleteSaved(name);
+      log(`Deleted saved model "${name}".`);
+      refreshSavedModels();
+    } catch (err: any) {
+      log(`ERROR deleting model: ${err?.message || err}`, 'error');
+    }
+  };
+
   const sparkline = lossHistory.length > 1 ? buildSparklinePath(lossHistory) : null;
 
   return (
     <div className="h-full flex bg-[#0a0a0f] text-gray-200 text-sm">
-      {/* ── Left: config + corpus ── */}
-      <div className="w-72 border-r border-white/5 flex flex-col shrink-0 overflow-y-auto">
+      {/* ── Left: config + corpus + saved models ── */}
+      <div className="w-80 border-r border-white/5 flex flex-col shrink-0 overflow-y-auto">
         <div className="p-3 border-b border-white/5 flex items-center gap-2">
           <Cpu size={14} className="text-cyan-300" />
           <span className="text-xs font-bold text-gray-300 uppercase tracking-wider">Local Model (BNLM)</span>
         </div>
 
         <div className="p-3 flex flex-col gap-3">
+          <div className="border border-purple-500/20 bg-purple-500/5 rounded-lg p-2 flex flex-col gap-2">
+            <label className="text-[10px] text-purple-300 uppercase tracking-wide flex items-center gap-1"><Wand2 size={10} /> Generate dataset with Groq</label>
+            <input
+              type="text"
+              value={datasetTopic}
+              onChange={e => setDatasetTopic(e.target.value)}
+              placeholder="Topic..."
+              className="w-full bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs text-gray-300 outline-none focus:border-purple-500/50"
+            />
+            <div className="flex gap-2">
+              <NumberField label="stories" value={datasetCount} onChange={setDatasetCount} compact />
+              <button
+                onClick={handleGenerateDataset}
+                disabled={isGeneratingDataset}
+                className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 bg-purple-600/20 border border-purple-500/30 hover:bg-purple-600/30 disabled:opacity-40 rounded text-xs font-medium text-purple-300 transition-colors"
+              >
+                {isGeneratingDataset ? <Loader2 size={12} className="animate-spin" /> : <Wand2 size={12} />}
+                Generate
+              </button>
+            </div>
+          </div>
+
           <div>
             <label className="text-[10px] text-gray-500 uppercase tracking-wide">Training text</label>
             <textarea
@@ -133,25 +293,68 @@ export const LocalModelApp: React.FC = () => {
             <NumberField label="context" value={contextLen} onChange={setContextLen} />
           </div>
 
-          <div>
-            <label className="text-[10px] text-gray-500 uppercase tracking-wide">Mixer</label>
-            <select
-              value={mixerType}
-              onChange={e => setMixerType(e.target.value as MixerType)}
-              className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 outline-none focus:border-cyan-500/50"
-            >
-              <option value="attention">attention</option>
-              <option value="linear">linear</option>
-              <option value="rwkv">rwkv</option>
-            </select>
+          <div className="grid grid-cols-2 gap-2 items-end">
+            <div>
+              <label className="text-[10px] text-gray-500 uppercase tracking-wide">Mixer</label>
+              <select
+                value={mixerType}
+                onChange={e => setMixerType(e.target.value as MixerType)}
+                className="mt-1 w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-gray-300 outline-none focus:border-cyan-500/50"
+              >
+                <option value="attention">attention</option>
+                <option value="linear">linear</option>
+                <option value="rwkv">rwkv</option>
+              </select>
+            </div>
+            <NumberField label="workers" value={numWorkers} onChange={setNumWorkers} />
           </div>
 
           <button
             onClick={handleInit}
-            className="flex items-center justify-center gap-2 px-3 py-2 bg-cyan-600/20 border border-cyan-500/30 hover:bg-cyan-600/30 rounded-lg text-xs font-medium text-cyan-300 transition-colors"
+            disabled={isInitializing}
+            className="flex items-center justify-center gap-2 px-3 py-2 bg-cyan-600/20 border border-cyan-500/30 hover:bg-cyan-600/30 disabled:opacity-40 rounded-lg text-xs font-medium text-cyan-300 transition-colors"
           >
-            <RotateCcw size={12} /> Initialize / Reset Model
+            {isInitializing ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
+            Initialize / Reset Model
           </button>
+
+          <div className="border-t border-white/5 pt-3 flex flex-col gap-2">
+            <label className="text-[10px] text-gray-500 uppercase tracking-wide">Saved models</label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={saveName}
+                onChange={e => setSaveName(e.target.value)}
+                placeholder="Name this model..."
+                className="flex-1 bg-white/5 border border-white/10 rounded px-2 py-1.5 text-xs text-gray-300 outline-none focus:border-cyan-500/50"
+              />
+              <button
+                onClick={handleSaveModel}
+                disabled={!isReady || isSaving}
+                className="flex items-center gap-1 px-2.5 py-1.5 bg-white/5 border border-white/10 hover:bg-white/10 disabled:opacity-40 rounded text-xs text-gray-300 transition-colors"
+              >
+                {isSaving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+              </button>
+            </div>
+            {savedModels.length === 0 ? (
+              <div className="text-[10px] text-gray-600">No saved models yet.</div>
+            ) : (
+              <div className="flex flex-col gap-1 max-h-32 overflow-y-auto">
+                {savedModels.map(m => (
+                  <div key={m.name} className="flex items-center gap-1 text-[11px] bg-white/[0.03] border border-white/5 rounded px-2 py-1">
+                    <span className="flex-1 truncate text-gray-300" title={m.name}>{m.name}</span>
+                    <span className="text-[9px] text-gray-600 shrink-0">{m.paramCount.toLocaleString()}p</span>
+                    <button onClick={() => handleLoadModel(m.name)} disabled={isLoadingModel} className="p-1 text-gray-500 hover:text-cyan-400 transition-colors" title="Load">
+                      <FolderOpen size={11} />
+                    </button>
+                    <button onClick={() => handleDeleteModel(m.name)} className="p-1 text-gray-500 hover:text-red-400 transition-colors" title="Delete">
+                      <Trash2 size={11} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -217,16 +420,99 @@ export const LocalModelApp: React.FC = () => {
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto p-3 font-mono text-[11px] space-y-1">
-          {logs.length === 0 && (
-            <div className="text-gray-600">Paste in some text, initialize a model, then train and generate — all in this tab, no server involved.</div>
-          )}
-          {logs.map(l => (
-            <div key={l.id} className={l.kind === 'error' ? 'text-red-400' : l.kind === 'success' ? 'text-green-400' : 'text-gray-500'}>
-              {l.text}
-            </div>
+        {/* Bottom tabs: Log / Run History / Generation Log */}
+        <div className="px-3 pt-2 flex items-center gap-1 border-b border-white/5">
+          {(['log', 'runs', 'generations'] as BottomTab[]).map(tab => (
+            <button
+              key={tab}
+              onClick={() => setBottomTab(tab)}
+              className={`px-3 py-1.5 text-[10px] uppercase tracking-wide rounded-t transition-colors ${bottomTab === tab ? 'bg-white/5 text-cyan-300 border-b-2 border-cyan-400' : 'text-gray-500 hover:text-gray-300'}`}
+            >
+              {tab === 'log' ? 'Log' : tab === 'runs' ? `Run History (${runHistory.length})` : `Generations (${genHistory.length})`}
+            </button>
           ))}
-          <div ref={bottomRef} />
+          {bottomTab === 'runs' && runHistory.length > 0 && (
+            <button onClick={() => { runHistoryStore.clear(); refreshHistory(); }} className="ml-auto text-[10px] text-gray-600 hover:text-red-400">Clear</button>
+          )}
+          {bottomTab === 'generations' && genHistory.length > 0 && (
+            <button onClick={() => { genHistoryStore.clear(); refreshHistory(); }} className="ml-auto text-[10px] text-gray-600 hover:text-red-400">Clear</button>
+          )}
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-3 font-mono text-[11px]">
+          {bottomTab === 'log' && (
+            <div className="space-y-1">
+              {logs.length === 0 && (
+                <div className="text-gray-600">Paste in some text (or generate one with Groq above), initialize a model, then train and generate — all in this tab, no server involved.</div>
+              )}
+              {logs.map(l => (
+                <div key={l.id} className={l.kind === 'error' ? 'text-red-400' : l.kind === 'success' ? 'text-green-400' : 'text-gray-500'}>
+                  {l.text}
+                </div>
+              ))}
+              <div ref={bottomRef} />
+            </div>
+          )}
+
+          {bottomTab === 'runs' && (
+            runHistory.length === 0 ? (
+              <div className="text-gray-600">No training runs logged yet — results appear here each time a training run finishes.</div>
+            ) : (
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="text-gray-500 text-[10px] uppercase">
+                    <th className="pb-1 pr-3">Time</th>
+                    <th className="pb-1 pr-3">Mixer</th>
+                    <th className="pb-1 pr-3">Config</th>
+                    <th className="pb-1 pr-3">Params</th>
+                    <th className="pb-1 pr-3">Steps</th>
+                    <th className="pb-1 pr-3">Loss</th>
+                    <th className="pb-1">Duration</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {runHistory.map((r, i) => (
+                    <tr key={i} className="border-t border-white/5 text-gray-400">
+                      <td className="py-1 pr-3">{r.time}</td>
+                      <td className="py-1 pr-3">{r.mixer}</td>
+                      <td className="py-1 pr-3">d={r.dModel} L={r.numLayers} H={r.numHeads} ctx={r.contextLen}</td>
+                      <td className="py-1 pr-3">{r.params.toLocaleString()}</td>
+                      <td className="py-1 pr-3">{r.totalSteps}</td>
+                      <td className="py-1 pr-3">{r.finalLoss.toFixed(4)}</td>
+                      <td className="py-1">{r.durationSec.toFixed(1)}s</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          )}
+
+          {bottomTab === 'generations' && (
+            genHistory.length === 0 ? (
+              <div className="text-gray-600">No generations logged yet.</div>
+            ) : (
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="text-gray-500 text-[10px] uppercase">
+                    <th className="pb-1 pr-3">Time</th>
+                    <th className="pb-1 pr-3">Mixer</th>
+                    <th className="pb-1 pr-3">Prompt</th>
+                    <th className="pb-1">Output</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {genHistory.map((r, i) => (
+                    <tr key={i} className="border-t border-white/5 text-gray-400 align-top">
+                      <td className="py-1 pr-3 whitespace-nowrap">{r.time}</td>
+                      <td className="py-1 pr-3 whitespace-nowrap">{r.mixer}</td>
+                      <td className="py-1 pr-3 max-w-[160px] truncate" title={r.prompt}>{r.prompt}</td>
+                      <td className="py-1 max-w-[320px] truncate" title={r.output}>{r.output}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          )}
         </div>
       </div>
     </div>

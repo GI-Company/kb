@@ -1,57 +1,51 @@
-# Kernos: An Exploration of Cognitive Microkernel Architecture
+# Kernos + BNLM: Cloud Reasoning Paired with a Genuinely Local Model
 
-**Date of Publication:** March 2026  
-**Project Type:** Technical Architecture Proof-of-Concept  
+**Date of Publication:** March 2026 (original), updated for the Groq/Vercel/BNLM merge
+**Project Type:** Technical Architecture Proof-of-Concept
 
 ## Abstract
 
-Modern operating systems are deterministic state machines that rely on explicit user instruction. Artificial intelligence is typically integrated as an application-layer service disconnected from the kernel’s process scheduler, memory manager, and filesystem. This paper introduces **Kernos OS**, a conceptual microkernel architecture implemented via a Go backend and a React-based graphical interface. The primary research goal is to demonstrate the feasibility and advantages of integrating cognitive routing, speculative execution, and telemetry-based models directly into the inter-process communication (IPC) layer.
-
-By sinking these primitives into the OS core, Kernos explores transforming the computing environment from a passive tool into an anticipating execution engine capable of parallel self-healing and zero-latency prediction.
+Most "AI-native" tools integrate a language model as a remote service the application calls into — the model is never actually present on the user's machine, and "local" usually just means "the UI runs locally while the model runs in someone's datacenter." This paper describes a system that combines both modes honestly: a fast, capable cloud model (Groq, hosting a family of agent personas distinguished by system prompt) handles reasoning and planning, while a second, genuinely local model — a small decoder-only Transformer implemented from scratch in JavaScript, with autograd, three attention variants, and a training loop — initializes, trains, and runs inference entirely inside the browser tab, with no network dependency once loaded. The cloud model can direct the local one: an agent persona can emit a structured tool call that trains or samples from the in-browser model and reports the result back into the conversation.
 
 ## 1. Introduction
 
-Operating systems have fundamentally remained unchanged for the past fifty years, designed to parse syntax and execute binary files. As LLMs (Large Language Models) have evolved to possess semantic reasoning, their integration into software development has primarily been accomplished through IDE plugins or external interfaces.
+The original version of this project (Kernos OS) explored a different question: what if an operating system's kernel itself reasoned about user intent, via a persistent Go process hosting local LLMs, a vector-graph memory, and speculative command execution? That system required a process running on the user's host machine — it could not be handed to someone as a URL.
 
-Kernos OS posits a different approach: What happens when the operating system kernel itself possesses a semantic understanding of its state? This project serves as a technical proof-of-concept for a "Cognitive Microkernel," where the system's core message bus is deeply integrated with local language models, vector databases, and parallel task orchestration networks.
+This version answers a narrower, more concretely useful question: what does it look like to combine a **cloud model that's actually good at reasoning** with a **model that's actually running on the user's own hardware**, deployed as a single stateless web app anyone can open in a browser tab? The two failure modes it avoids are (a) pretending a cloud API call is "local AI," and (b) requiring users to install anything to get a real local model.
 
 ## 2. System Architecture
 
-Kernos operates purely via a high-performance publish-subscribe WebSocket bus. The OS completely decouples the user interface (the DOM) from the execution layer (the Go microkernel), assuring absolute boundary isolation.
+### 2.1 The Envelope Bus, Retargeted
 
-### 2.1 The IPC Envelope Protocol 
+The UI still communicates via a typed `Envelope { topic, from, to?, payload, time }` publish/subscribe protocol — unchanged from the original design. What changed is what's on the other end: instead of a WebSocket to a persistent Go process, `services/kernel.ts` is a local, synchronous bus that routes specific topics to stateless Vercel functions (`/api/chat`, `/api/exec`) and answers everything else either locally (static agent roster, chat history in localStorage) or as a graceful no-op (topics whose backend no longer exists). Every UI component that consumed the bus works unmodified; only the transport layer changed.
 
-The fundamental atomic unit of Kernos is the `Envelope`. Every action—opening a file, executing a shell command, broadcasting a system alert—is transmitted as a JSON envelope over the WebSocket bus. By enforcing this strict message-passing schema, Kernos implements Capability-Based Security, whereby agents and UI elements can only affect the system state if their origin hash is authorized for the explicit topic.
+### 2.2 Multi-Persona Routing Over a Single Model
 
-### 2.2 GraphRAG and Speculative Execution
+Rather than six agents each with independent reasoning capacity, this system routes six distinct system prompts (Dispatcher, Architect, Assistant, DevOps, Security, Code Review) through one Groq-hosted model. The differentiation is entirely in framing and instruction, not model capability — a deliberate simplification from a multi-model design, trading some behavioral diversity for zero local infrastructure and near-instant Groq inference latency.
 
-To mitigate the latency inherent to LLM generation and solve the "lost in the middle" context window problem, Kernos introduces **GraphRAG combined with Speculative execution within a Shadow Sandbox**. 
-Rather than simple semantic similarity, Kernos runs a background Daemon (Qwen3.5-9B) to continuously extract entities and relationships from Nomic-vectorized filesystem chunks, populating a structured SQLite Knowledge Graph. 
-As a user types in the terminal, the kernel evaluates partial input alongside the current semantic context. A background Prediction Engine queries a local LLM to predict the user’s intended command. If a highly probable command is synthesized, Kernos silently spawns a 10-second isolated `tmp` jail (the Shadow Sandbox) and pre-executes the binary. 
-If the user submits the anticipated command, the OS yields the pre-computed `stdout` instantaneously, achieving perceived zero-latency execution.
+### 2.3 A Model That Is Actually Local
 
-### 2.3 Concurrent DAG Mutation for Self-Healing
+The core empirical claim worth stating precisely: `src/bnlm/model.js` implements a decoder-only Transformer — token/positional embeddings, pre-norm blocks, a choice of three causal token-mixers (standard softmax attention with a KV-cache generation path, causal linear attention with an O(1)-memory recurrent generation form, and an RWKV-v4-style time-mixing recurrent mixer) — with a hand-rolled reverse-mode autograd engine (`tensor.js`) and a WGSL compute shader for the dominant matmuls when WebGPU is available, falling back to pure-JS CPU matmul otherwise. Training uses a standard Adam optimizer and cross-entropy loss, with an optional data-parallel mode that shards batches across Web Workers and averages gradients before a single optimizer step. Every operation is gradient-checked against finite differences.
 
-Error handling in standard shell scripts is notoriously brittle. Kernos replaces sequential execution with **Directed Acyclic Graphs (DAGs)** orchestrated by an autonomous Task Engine.
-If an intermediate node in a DAG fails, the Task Engine intercepts the standard error stream and halts execution. Rather than terminating the process, the kernel queries an embedded Architect Agent to synthesize multiple, divergent recovery paths. The Task Engine executes these disparate paths concurrently in separate goroutines. The first branch to successfully exit `0` dynamically collapses the probability state, and the winning node is grafted into the DAG, allowing the system to robustly recover from unexpected failures.
+This model is genuinely initialized from random weights and trained, in the same tab the UI renders in, on whatever text the user (or a Groq agent, generating a synthetic training set on request) provides. Its outputs are not cached, retrieved, or proxied from anywhere.
 
-### 2.4 Contrastive Reinforcement Learning from Human Feedback (RLHF)
+### 2.4 The Agentic Tool-Call Loop
 
-Kernos employs a local SQLite telemetry database to log the outcome of all executed task graphs, assigning a scalar reward (+1.0 for success, -1.0 for failure or timeout). 
-During an autonomous nightly consolidation cycle, the system extracts the high-reward "Golden Paths" and the negative-reward "Anti-Patterns." Using Contrastive RLHF logic, it synthesizes these mathematical gradients into actionable structural rules, sustainably updating the system prompt weights of the embedded agents. This ensures the cognitive microkernel inherently improves its architectural decision-making over time based purely on past telemetry data.
+Two of the six personas carry an additional instruction: when the user's request calls for training or sampling from a local model, emit a single fenced JSON block naming the tool (`bnlm.train` / `bnlm.generate`) and its arguments. The client extracts this block from the streamed reply, executes it against the local model service, and appends the result as a follow-up message in the same thread — the same pattern used by tool-calling APIs generally, applied here to a tool that happens to run entirely client-side rather than as a remote function.
 
-### 2.5 WebRTC Peer-to-Peer Data Channels
+### 2.5 Persistence Without a Server
 
-Decentralized collaboration is natively supported via WebRTC. The Go microkernel functions as a signaling relay, enabling two disparate Kernos instances to exchange ICE candidates and SDP payloads via a 4-digit PIN protocol. Once joined, a WebRTC data channel physically bridges the WebSocket buses of the two operating systems, permitting distributed workload execution and peer-to-peer cognitive sharing without relying on a centralized cloud intermediary.
+Trained models, chat history, and the virtual filesystem all persist across reloads using browser storage — IndexedDB for model weights (binary, can exceed a comfortable localStorage budget even at these small demo sizes) and localStorage for everything else. No account system exists yet; a single "guest" identity is used, with the persistence layer already shaped (see Section 3) so a real backend can be swapped in without touching the UI.
 
 ## 3. Results and Limitations
 
-The current implementation of Kernos OS, packaged within a 19MB statically-linked Go binary, successfully demonstrates that complex, parallel self-healing structures can be executed on consumer hardware with zero API inference costs using tools like LM Studio.
+The current implementation is a real, working system: Groq round-trips complete in the low seconds with token streaming, and a small BNLM model (tens of thousands of parameters) visibly reduces loss and produces recognizable fragments of its training text within a couple hundred training steps, entirely in-tab.
 
-However, several limitations exist:
-- **Sandbox Sophistication**: The current Go `exec.Cmd` implementation relies on standard temporary directories and dynamic `PATH` allowlisting. Future iterations would require migration to strict WebAssembly (Wasm) runtime isolation (e.g., Wazero) to guarantee absolute mathematical process isolation.
-- **Model Constraints**: The accuracy of the Speculative Execution and Concurrent DAG Mutation pipelines is heavily dependent on the reasoning capabilities of the underlying local LLM. 
+Limitations, stated plainly:
+- **No persistent host process.** Several features from the original design genuinely require one — a real package manager that installs binaries, WebRTC P2P collaboration, a speculative command-execution cache, background RLHF consolidation — and are not present in this version. They are architecturally incompatible with a stateless deployment, not merely unimplemented.
+- **BNLM's scale is intentionally small.** This is a demonstration of the training loop being real, not a claim of competitive model quality — these are toy-sized models (tens to low hundreds of thousands of parameters) suited to memorizing small, simple corpora, comparable to what the TinyStories line of research uses to study what very small models can learn.
+- **Sandbox sophistication.** `api/exec.ts`'s command allowlist had to shrink further than the original Go version's, since Vercel's Node function runtime doesn't ship the broader toolset a real host would (no git/python/go/rust/ffmpeg by default).
 
 ## 4. Conclusion
 
-Kernos OS represents an exploratory technical portfolio project. It serves as empirical evidence that when a developer orchestrates AI to construct complex, low-level system topologies, radical new computing paradigms become visible. For further research, embedding these cognitive mechanisms directly into a custom Linux distribution kernel space could yield unprecedented performance and autonomous resilience.
+The interesting result here isn't either half in isolation — cloud LLM wrappers and toy client-side Transformers both exist elsewhere — it's that they compose cleanly through a single tool-call contract: a fast, capable model deciding when a slower, private, zero-cost, offline-capable model should be trained or consulted, without the user ever leaving one chat window. Extending this pattern to larger local models (as WebGPU compute and browser memory budgets grow) or to a persistent-backend deployment (recovering the cut features via a real database) are both natural next steps.
