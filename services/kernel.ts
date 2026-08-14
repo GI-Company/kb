@@ -2,6 +2,7 @@ import { Envelope } from '../types';
 import { DEFAULT_AGENTS } from '../lib/agents';
 import { chatStore } from '../lib/chatStore';
 import { getDemoPipeline, planGoal, runTaskGraph, TaskNode } from '../lib/taskEngine';
+import { supabase } from '../lib/supabaseClient';
 
 type BusListener = (envelope: Envelope) => void;
 
@@ -74,6 +75,7 @@ class Kernel {
     if (env.topic === 'agent.chat' && env.to) return void this.handleAgentChat(env);
     if (env.topic === 'ai.chat') return void this.handleDirectChat(env);
     if (env.topic === 'vm.spawn') return void this.handleExec(env);
+    if (env.topic === 'vm.render') return void this.handleRender(env);
     if (env.topic === 'terminal.check_shadow') return this.handleShadowCheck(env);
     if (env.topic === 'sys.terminal.intent') return void this.handleTerminalIntent(env);
     if (env.topic.startsWith('chat.')) return void this.handleChatHistory(env);
@@ -185,9 +187,20 @@ class Kernel {
   private async handleExec(env: Envelope) {
     const payload = env.payload as { _request_id?: string; cmd: string; args?: string[] };
     try {
+      // Attaches the caller's Supabase access token when a real (non-guest)
+      // session exists, so api/exec.ts can gate network commands (curl,
+      // dig, ...) to signed-in accounts only — guests still get the
+      // existing coreutils-only sandbox with no auth at all, silently.
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      if (supabase) {
+        const { data } = await supabase.auth.getSession();
+        if (data.session?.access_token) {
+          headers.authorization = `Bearer ${data.session.access_token}`;
+        }
+      }
       const res = await fetch('/api/exec', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers,
         body: JSON.stringify({ cmd: payload.cmd, args: payload.args || [] }),
       });
       const data = await res.json();
@@ -200,6 +213,39 @@ class Kernel {
       this.broadcast({ topic: 'vm.exit', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, code: data.code ?? 0 }, time: now() });
     } catch (err: any) {
       this.broadcast({ topic: 'vm.stderr', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, text: `Failed to reach exec sandbox: ${err?.message || err}\n` }, time: now() });
+      this.broadcast({ topic: 'vm.exit', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, code: 1 }, time: now() });
+    }
+  }
+
+  /** Terminal's `render <url> [--screenshot]` — a real headless-browser page load, separate endpoint from vm.spawn/api/exec.ts since it needs a much longer budget (see api/browser-render.ts). Screenshot results go out as a distinct 'vm.render:image' topic since vm.stdout is plain text — Terminal.tsx renders that one specially instead of as terminal text. */
+  private async handleRender(env: Envelope) {
+    const payload = env.payload as { _request_id?: string; url: string; mode?: 'text' | 'screenshot' };
+    try {
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      if (supabase) {
+        const { data } = await supabase.auth.getSession();
+        if (data.session?.access_token) {
+          headers.authorization = `Bearer ${data.session.access_token}`;
+        }
+      }
+      const res = await fetch('/api/browser-render', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ url: payload.url, mode: payload.mode || 'text' }),
+      });
+      const data = await res.json();
+
+      if (data.stderr) {
+        this.broadcast({ topic: 'vm.stderr', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, text: data.stderr }, time: now() });
+      } else if (data.screenshot) {
+        this.broadcast({ topic: 'vm.stdout', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, text: `${data.title || payload.url}\n` }, time: now() });
+        this.broadcast({ topic: 'vm.render:image', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, dataUrl: `data:image/png;base64,${data.screenshot}` }, time: now() });
+      } else if (data.text !== undefined) {
+        this.broadcast({ topic: 'vm.stdout', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, text: `${data.title ? data.title + '\n\n' : ''}${data.text}\n` }, time: now() });
+      }
+      this.broadcast({ topic: 'vm.exit', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, code: data.code ?? 0 }, time: now() });
+    } catch (err: any) {
+      this.broadcast({ topic: 'vm.stderr', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, text: `Failed to reach render service: ${err?.message || err}\n` }, time: now() });
       this.broadcast({ topic: 'vm.exit', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, code: 1 }, time: now() });
     }
   }

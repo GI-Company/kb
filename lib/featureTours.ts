@@ -89,6 +89,11 @@ export const FEATURE_TOURS: Record<string, TourStep[]> = {
       title: 'Natural language shell',
       description: 'Prefix with "?" — e.g. "? show large files" — and it\'ll be translated into a real command and run automatically.',
     },
+    {
+      selector: '[data-tour="terminal-input"]',
+      title: 'Real network access, for signed-in accounts',
+      description: 'curl, dig, ping, and render (a real headless-browser page load, optionally as a screenshot) — sign in to unlock these; guests keep the sandboxed commands only.',
+    },
   ],
   'files': [
     {

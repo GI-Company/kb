@@ -7,18 +7,24 @@
 //    temp jail dir under os.tmpdir() and nothing persists after it returns —
 //    there's no "workspace" to build up between commands like there was on
 //    the always-on Go backend.
-//  - The allowlist is deliberately smaller than the Go version's. Vercel's
-//    Node function runtime is a minimal Linux image — things like git,
-//    python3, go, rust, ffmpeg, sqlite3, ping/dig/nslookup are NOT
-//    guaranteed to be installed, unlike a real host. Rather than guess,
-//    a missing command is detected directly from the real exec attempt's
-//    ENOENT spawn error (Node's signal that the executable itself couldn't
-//    be found), not a separate `which` pre-check — `which` itself isn't
-//    guaranteed to be on this runtime's PATH either, and a pre-check that
-//    silently fails open/closed on its own missing dependency is worse
-//    than just trying the real thing and handling that specific failure.
+//  - The coreutils allowlist is deliberately smaller than the Go version's.
+//    Vercel's Node function runtime is a minimal Linux image — things like
+//    git/python3/go/rust/ffmpeg/sqlite3 are NOT guaranteed to be installed,
+//    unlike a real host. Rather than guess, a missing command is detected
+//    directly from the real exec attempt's ENOENT spawn error (Node's
+//    signal that the executable itself couldn't be found), not a separate
+//    `which` pre-check — `which` itself isn't guaranteed to be on this
+//    runtime's PATH either, and a pre-check that silently fails open/closed
+//    on its own missing dependency is worse than just trying the real thing.
 //  - 10s hard timeout (see vercel.json's functions.api/exec.ts.maxDuration),
 //    down from the Go version's 30s.
+//  - Real network commands (curl, dig/nslookup, ping — see
+//    lib/networkCommands.ts) are implemented natively rather than shelled
+//    out, gated to signed-in accounts only (lib/verifyAuth.ts), and SSRF-
+//    guarded against private/internal address ranges (lib/networkGuard.ts).
+//    An anonymous, IP-quota-only terminal that can make arbitrary outbound
+//    requests is a ready-made abuse vector — guests keep the coreutils-only
+//    sandbox below with no network access at all.
 //
 // Request:  POST { cmd: string, args: string[] }
 // Response: { stdout: string, stderr: string, code: number }
@@ -28,17 +34,23 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkRateLimit, getClientIp, rateLimitResponseHeaders } from '../lib/rateLimit.js';
+import { verifyAccessToken, extractBearerToken } from '../lib/verifyAuth.js';
+import { runCurl, runDig, runPing } from '../lib/networkCommands.js';
 
 // Conservative — commands near-certain to exist in a Linux-based Node
-// serverless runtime. No git/python/go/rust/ffmpeg/sqlite3/network-probing
-// tools; those aren't part of a stock Node function image.
+// serverless runtime. No git/python/go/rust/ffmpeg/sqlite3; those aren't
+// part of a stock Node function image.
 const ALLOWED_COMMANDS = new Set([
   'ls', 'cat', 'head', 'tail', 'echo', 'grep', 'sed', 'awk', 'cut', 'tr',
   'find', 'wc', 'sort', 'uniq', 'diff', 'date', 'whoami', 'uname', 'pwd',
   'hostname', 'id', 'env', 'printenv', 'which', 'df', 'du', 'ps',
   'mkdir', 'touch', 'cp', 'mv', 'stat', 'file', 'node', 'npm', 'npx',
-  'curl', 'tar', 'gzip', 'jq',
+  'tar', 'gzip', 'jq',
 ]);
+
+// Real network access — see the file-header comment above. Handled before
+// the coreutils allowlist/sandbox path entirely, not shelled out.
+const NETWORK_COMMANDS = new Set(['curl', 'dig', 'nslookup', 'ping']);
 
 const DANGEROUS_CHARS = /[&|;`$()<>]/;
 const EXEC_TIMEOUT_MS = 9000; // stay under the 10s function budget
@@ -75,10 +87,30 @@ export default async function handler(req: any, res: any) {
 
   if (cmd === 'help') {
     res.status(200).json({
-      stdout: `Available commands: ${[...ALLOWED_COMMANDS].sort().join(', ')}\n`,
+      stdout:
+        `Available commands: ${[...ALLOWED_COMMANDS].sort().join(', ')}\n` +
+        `Network commands (signed-in accounts only): ${[...NETWORK_COMMANDS].sort().join(', ')}\n` +
+        `render <url> [--screenshot] — headless-browser page render (signed-in accounts only, separate endpoint)\n`,
       stderr: '',
       code: 0,
     });
+    return;
+  }
+
+  if (NETWORK_COMMANDS.has(cmd)) {
+    const user = await verifyAccessToken(extractBearerToken(req));
+    if (!user) {
+      res.status(200).json({
+        stdout: '',
+        stderr: `PERMISSION DENIED: '${cmd}' requires a signed-in account — guests get the sandboxed coreutils only. Sign in from the login screen for network access.\n`,
+        code: 126,
+      });
+      return;
+    }
+    const result = cmd === 'curl' ? await runCurl(args)
+      : cmd === 'ping' ? await runPing(args)
+      : await runDig(args); // dig, nslookup
+    res.status(200).json(result);
     return;
   }
 

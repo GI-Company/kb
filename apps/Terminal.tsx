@@ -7,11 +7,12 @@ interface Line {
   type: 'input' | 'output' | 'error' | 'intent';
   content: string;
   time: string;
+  imageDataUrl?: string; // set for `render <url> --screenshot` results — see the vm.render:image topic below
 }
 
 export const TerminalApp: React.FC = () => {
   const [lines, setLines] = useState<Line[]>([
-    { id: 'init', type: 'output', content: 'Kernos OS [Version 1.0.0]\n(c) 2025 Kernos Foundation. All rights reserved.\n\nType "help" for commands.\nPrefix with "?" for natural language (e.g. ? show large files)\n', time: new Date().toLocaleTimeString() }
+    { id: 'init', type: 'output', content: 'Kernos OS [Version 1.0.0]\n(c) 2025 Kernos Foundation. All rights reserved.\n\nType "help" for commands.\nPrefix with "?" for natural language (e.g. ? show large files)\nSigned-in accounts also get curl/dig/ping/render — sign in from Settings for network access.\n', time: new Date().toLocaleTimeString() }
   ]);
   const [input, setInput] = useState('');
   const [ghostPrediction, setGhostPrediction] = useState('');
@@ -81,6 +82,23 @@ export const TerminalApp: React.FC = () => {
 
       if (command === 'clear') {
         setLines([]);
+      } else if (command === 'render') {
+        // Headless-browser page render — a real navigated page, not just a
+        // fetch, and a separate endpoint/budget from every other command
+        // here (see api/browser-render.ts). Signed-in accounts only; a
+        // guest gets that exact error back as a normal vm.stderr line.
+        const url = args.find(a => !a.startsWith('--'));
+        const mode = args.includes('--screenshot') ? 'screenshot' : 'text';
+        if (!url) {
+          setLines(prev => [...prev, {
+            id: Math.random().toString(),
+            type: 'error',
+            content: 'render: missing URL. Usage: render <url> [--screenshot]\n',
+            time: new Date().toLocaleTimeString()
+          }]);
+        } else {
+          kernel.publish('vm.render', { _request_id: reqId, url, mode });
+        }
       } else {
         // Suspend standard execution and check the Speculative Execution shadow engine
         setPendingCmd({ cmd: command, args, reqId });
@@ -109,6 +127,20 @@ export const TerminalApp: React.FC = () => {
           content: env.payload.text,
           time: new Date().toLocaleTimeString()
         }]);
+      }
+
+      // `render <url> --screenshot` result — displayed as an image, not text.
+      if (env.topic === 'vm.render:image') {
+        const dataUrl = (env.payload as any).dataUrl;
+        if (dataUrl) {
+          setLines(prev => [...prev, {
+            id: Math.random().toString(),
+            type: 'output',
+            content: '',
+            imageDataUrl: dataUrl,
+            time: new Date().toLocaleTimeString()
+          }]);
+        }
       }
 
       // Ghost Command prediction received
@@ -194,7 +226,11 @@ export const TerminalApp: React.FC = () => {
         }`}>
           {line.type === 'input' && <span className="text-cyan-500 mr-2">➜ ~</span>}
           {line.type === 'intent' && <span className="text-purple-500 mr-2">⚡</span>}
-          <span className="whitespace-pre-wrap">{line.content}</span>
+          {line.imageDataUrl ? (
+            <img src={line.imageDataUrl} alt="rendered page" className="max-w-full rounded border border-white/10 my-1" />
+          ) : (
+            <span className="whitespace-pre-wrap">{line.content}</span>
+          )}
         </div>
       ))}
       <div className="flex items-center mt-2 relative">

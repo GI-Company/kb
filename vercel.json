@@ -11,6 +11,10 @@
   "functions": {
     "api/exec.ts": {
       "maxDuration": 10
+    },
+    "api/browser-render.ts": {
+      "maxDuration": 60,
+      "memory": 1536
     }
   },
   "rewrites": [
