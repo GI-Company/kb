@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { kernel } from '../services/kernel';
 import { vfs } from '../lib/vfs';
+import { getCurrentUserId } from '../lib/auth';
 import { Envelope } from '../types';
 import {
   FolderOpen, File, ChevronRight, ChevronDown, Save, Sparkles,
@@ -127,6 +128,10 @@ export const CDEApp: React.FC = () => {
   // File tree state
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
   const [treeLoading, setTreeLoading] = useState(true);
+  const [userId, setUserId] = useState('guest');
+  useEffect(() => {
+    getCurrentUserId().then(setUserId);
+  }, []);
 
   // Tabs state
   const [tabs, setTabs] = useState<EditorTab[]>([]);
@@ -159,58 +164,60 @@ export const CDEApp: React.FC = () => {
 
   const activeTab = tabs.find(t => t.id === activeTabId) || null;
 
-  // ── Load file tree on mount ──
-  useEffect(() => {
-    loadFileTree();
-  }, []);
-
   /** Recursively walks lib/vfs.ts starting at `parentId`, building the nested tree the Explorer panel renders. */
-  const buildTreeFromVfs = (parentId: string, parentPath = ''): FileNode[] => {
-    const children = vfs.list(parentId);
+  const buildTreeFromVfs = useCallback(async (parentId: string, parentPath = ''): Promise<FileNode[]> => {
+    const children = await vfs.list(parentId, userId);
     const sorted = children.slice().sort((a, b) => {
       if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
       return a.name.localeCompare(b.name);
     });
-    return sorted.map(c => {
+    return Promise.all(sorted.map(async c => {
       const path = parentPath ? `${parentPath}/${c.name}` : c.name;
       return {
         id: c.id,
         name: c.name,
         path,
         type: c.type,
-        children: c.type === 'directory' ? buildTreeFromVfs(c.id, path) : undefined,
+        children: c.type === 'directory' ? await buildTreeFromVfs(c.id, path) : undefined,
         expanded: false,
       };
-    });
-  };
+    }));
+  }, [userId]);
 
-  const loadFileTree = () => {
+  const loadFileTree = useCallback(async () => {
     setTreeLoading(true);
-    setFileTree(buildTreeFromVfs('home'));
+    const tree = await buildTreeFromVfs('home');
+    setFileTree(tree);
     setTreeLoading(false);
-  };
+  }, [buildTreeFromVfs]);
 
-  const handleCreateFile = () => {
+  // Loads once userId resolves (starts 'guest', re-fires once the real
+  // account id — or confirmed guest id — comes back from getCurrentUserId()).
+  useEffect(() => {
+    loadFileTree();
+  }, [loadFileTree]);
+
+  const handleCreateFile = async () => {
     const name = prompt('New file name:');
-    if (name) { vfs.create('home', name, 'file'); loadFileTree(); }
+    if (name) { await vfs.create('home', name, 'file', userId); loadFileTree(); }
   };
 
-  const handleCreateFolder = () => {
+  const handleCreateFolder = async () => {
     const name = prompt('New folder name:');
-    if (name) { vfs.create('home', name, 'directory'); loadFileTree(); }
+    if (name) { await vfs.create('home', name, 'directory', userId); loadFileTree(); }
   };
 
-  const handleRenameNode = (node: FileNode) => {
+  const handleRenameNode = async (node: FileNode) => {
     const newName = prompt(`Rename ${node.name} to:`, node.name);
     if (newName && newName !== node.name) {
-      vfs.rename(node.id, newName);
+      await vfs.rename(node.id, newName, userId);
       loadFileTree();
     }
   };
 
-  const handleDeleteNode = (node: FileNode) => {
+  const handleDeleteNode = async (node: FileNode) => {
     if (!confirm(`Delete ${node.name}?`)) return;
-    vfs.remove(node.id);
+    await vfs.remove(node.id, userId);
     setTabs(prev => prev.filter(t => t.fileId !== node.id));
     loadFileTree();
   };
@@ -251,7 +258,7 @@ export const CDEApp: React.FC = () => {
   }, [terminalOutput]);
 
   // ── File tree actions ──
-  const handleFileSelect = (node: FileNode) => {
+  const handleFileSelect = async (node: FileNode) => {
     if (node.type !== 'file') return;
 
     // Check if tab already exists
@@ -261,12 +268,13 @@ export const CDEApp: React.FC = () => {
       return;
     }
 
+    const content = await vfs.read(node.id, userId);
     const newTab: EditorTab = {
       id: Math.random().toString(36).substring(7),
       fileId: node.id,
       name: node.name,
       path: node.path,
-      content: vfs.read(node.id),
+      content,
       isDirty: false,
       language: detectLanguage(node.name),
     };
@@ -294,11 +302,11 @@ export const CDEApp: React.FC = () => {
     }
   };
 
-  const handleSave = useCallback(() => {
+  const handleSave = useCallback(async () => {
     if (!activeTab) return;
-    vfs.write(activeTab.fileId, activeTab.content);
+    await vfs.write(activeTab.fileId, activeTab.content, userId);
     setTabs(prev => prev.map(t => t.id === activeTab.id ? { ...t, isDirty: false } : t));
-  }, [activeTab]);
+  }, [activeTab, userId]);
 
   // Keyboard shortcuts
   useEffect(() => {

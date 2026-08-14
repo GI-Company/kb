@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { kernel } from '../services/kernel';
 import { vfs } from '../lib/vfs';
+import { getCurrentUserId } from '../lib/auth';
 import { Envelope } from '../types';
 import { useOS } from '../store';
 import { Sparkles, Save, Play, Check, AlertCircle, LayoutTemplate } from 'lucide-react';
@@ -17,19 +18,25 @@ export const EditorApp: React.FC<EditorProps> = (props) => {
   const [aiStatus, setAiStatus] = useState<'idle' | 'thinking' | 'streaming'>('idle');
   const [aiMessage, setAiMessage] = useState('');
   const [isCompiling, setIsCompiling] = useState(false);
+  const [userId, setUserId] = useState('guest');
   const { openWindow } = useOS();
+
+  useEffect(() => {
+    getCurrentUserId().then(setUserId);
+  }, []);
 
   // Debounce timer for predictive telemetry
   const typingTimeoutRef = React.useRef<NodeJS.Timeout>();
 
-  // Load file content if fileId exists
+  // Load file content if fileId exists — re-runs once userId resolves from
+  // its 'guest' default to the real account/guest id.
   useEffect(() => {
     if (props.fileId) {
-      setContent(vfs.read(props.fileId));
+      vfs.read(props.fileId, userId).then(setContent);
     } else {
       setContent('// Untitled Buffer\n\nfunction main() {\n  console.log("Hello Kernos");\n}');
     }
-  }, [props.fileId]);
+  }, [props.fileId, userId]);
 
   const handleAiAsk = () => {
     setAiStatus('thinking');
@@ -39,10 +46,10 @@ export const EditorApp: React.FC<EditorProps> = (props) => {
     });
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (props.fileId) {
       setSaveStatus('saving');
-      vfs.write(props.fileId, content);
+      await vfs.write(props.fileId, content, userId);
       setIsDirty(false);
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 2000);
@@ -50,7 +57,7 @@ export const EditorApp: React.FC<EditorProps> = (props) => {
       // Create a new file in the VFS
       const name = prompt('Save as:', 'untitled.ts');
       if (name) {
-        vfs.create('home', name, 'file', content);
+        await vfs.create('home', name, 'file', userId, content);
         setSaveStatus('saved');
         setTimeout(() => setSaveStatus('idle'), 2000);
         setIsDirty(false);

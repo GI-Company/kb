@@ -1,8 +1,29 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useOS } from '../../store';
-import { Terminal, Monitor, FileCode, HardDrive, Cpu, Menu, Workflow, Bot, Brain, Sparkles, Activity, Settings, Users, Clock as ClockIcon, X, Pin, PinOff, LogOut, Maximize, Minus, Play } from 'lucide-react';
+import { Terminal, Monitor, FileCode, HardDrive, Cpu, Menu, Workflow, Bot, Brain, Sparkles, Activity, Settings, Users, Clock as ClockIcon, X, Pin, PinOff, LogOut, Maximize, Minus, Play, Timer } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useContextMenu } from './ContextMenu';
+import { formatRemaining } from '../../lib/guestUsage';
+
+// Guest-only daily quota countdown (see lib/guestUsage.ts / api/guest-usage.ts).
+// Renders nothing once guestRemainingSeconds is null — real accounts, and
+// guest sessions before the server-configured check comes back, show no chip.
+const GuestUsageChip: React.FC = () => {
+  const remaining = useOS(s => s.guestRemainingSeconds);
+  if (remaining === null) return null;
+  const low = remaining <= 120;
+  return (
+    <div
+      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border backdrop-blur-sm ${
+        low ? 'bg-red-500/10 border-red-500/20 text-red-400' : 'bg-black/40 border-white/5 text-gray-400'
+      }`}
+      title="Daily guest access remaining"
+    >
+      <Timer size={11} className={low ? 'animate-pulse' : ''} />
+      <span className="text-[10px] font-mono tracking-widest">{formatRemaining(remaining)}</span>
+    </div>
+  );
+};
 
 const Clock = () => {
   const [time, setTime] = useState(new Date());
@@ -276,6 +297,7 @@ export const Taskbar: React.FC = () => {
           <div className="w-1.5 h-1.5 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.8)] animate-pulse" />
           <span className="text-[10px] text-gray-400 font-mono tracking-widest hidden sm:block">ONLINE</span>
         </div>
+        <GuestUsageChip />
         <Clock />
       </div>
     </motion.div>

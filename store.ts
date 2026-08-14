@@ -37,6 +37,13 @@ interface OSStore {
   activeTourAppId: string | null;
   openFeatureTour: (appId: string) => void;
   closeFeatureTour: () => void;
+
+  // Driven by lib/guestUsage.ts's heartbeat, only while the current user is
+  // a guest — see App.tsx's tracking effect. null remainingSeconds means
+  // "not a guest" or "server-side limit not configured", not "no time left".
+  guestRemainingSeconds: number | null;
+  guestLimitReached: boolean;
+  setGuestUsage: (remainingSeconds: number | null, limitReached: boolean) => void;
 }
 
 function readLiteModePref(): boolean {
@@ -58,6 +65,9 @@ export const useOS = create<OSStore>((set) => ({
   activeTourAppId: null,
   openFeatureTour: (appId) => set({ activeTourAppId: appId }),
   closeFeatureTour: () => set({ activeTourAppId: null }),
+  guestRemainingSeconds: null,
+  guestLimitReached: false,
+  setGuestUsage: (remainingSeconds, limitReached) => set({ guestRemainingSeconds: remainingSeconds, guestLimitReached: limitReached }),
   liteMode: readLiteModePref(),
   setLiteMode: (v) => {
     try { localStorage.setItem('kernos_lite_mode', String(v)); } catch { /* best-effort */ }

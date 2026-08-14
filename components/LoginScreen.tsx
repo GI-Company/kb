@@ -1,6 +1,17 @@
 import React, { useState } from 'react';
 import { signIn, signUp, createGuestUser, isSupabaseConfigured, AppUser } from '../lib/auth';
-import { User, Lock, Mail, Plus, LogIn, Loader2, Eye, EyeOff, Shield } from 'lucide-react';
+import { GUEST_LIMIT_MESSAGE_KEY } from '../lib/guestUsage';
+import { User, Lock, Mail, Plus, LogIn, Loader2, Eye, EyeOff, Shield, Clock } from 'lucide-react';
+
+function readAndClearGuestLimitMessage(): string {
+  try {
+    const msg = localStorage.getItem(GUEST_LIMIT_MESSAGE_KEY);
+    if (msg) localStorage.removeItem(GUEST_LIMIT_MESSAGE_KEY);
+    return msg || '';
+  } catch {
+    return '';
+  }
+}
 
 interface LoginScreenProps {
   onLogin: (user: AppUser) => void;
@@ -15,6 +26,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onGuestAccess
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [guestLimitMessage] = useState(readAndClearGuestLimitMessage);
 
   const handleSubmit = async () => {
     if (!email || !password) return;
@@ -63,6 +75,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onGuestAccess
           {!isSupabaseConfigured && (
             <div className="mb-4 text-xs text-amber-400 bg-amber-400/10 rounded-lg px-3 py-2">
               Accounts aren't configured on this deployment — continue as guest below.
+            </div>
+          )}
+
+          {guestLimitMessage && (
+            <div className="mb-4 flex items-start gap-2 text-xs text-amber-400 bg-amber-400/10 rounded-lg px-3 py-2">
+              <Clock size={14} className="shrink-0 mt-0.5" />
+              <span>{guestLimitMessage}</span>
             </div>
           )}
 

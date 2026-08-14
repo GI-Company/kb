@@ -1,9 +1,10 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { localModel, DEFAULT_LOCAL_MODEL_CONFIG, MixerType } from '../lib/localModel';
 import { runHistoryStore, genHistoryStore, RunHistoryEntry, GenHistoryEntry } from '../lib/localModelHistory';
-import { SavedModelMeta } from '../lib/modelRegistry';
+import { SavedModelMeta } from '../lib/modelStore';
 import { fetchGroqText } from '../lib/groqFetch';
 import { trackEvent } from '../lib/analytics';
+import { getCurrentUserId } from '../lib/auth';
 import { Cpu, Play, Sparkles, Download, RotateCcw, Loader2, Save, FolderOpen, Trash2, Wand2, Gauge } from 'lucide-react';
 
 const SAMPLE_CORPUS = `Once upon a time, there was a small robot named Kip. Kip lived in a workshop full of gears and wires.
@@ -62,6 +63,11 @@ export const LocalModelApp: React.FC = () => {
   const [saveName, setSaveName] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [isLoadingModel, setIsLoadingModel] = useState(false);
+  const [userId, setUserId] = useState('guest');
+
+  useEffect(() => {
+    getCurrentUserId().then(setUserId);
+  }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -77,8 +83,8 @@ export const LocalModelApp: React.FC = () => {
   }, []);
 
   const refreshSavedModels = useCallback(() => {
-    localModel.listSaved().then(setSavedModels).catch(() => {});
-  }, []);
+    localModel.listSaved(userId).then(setSavedModels).catch(() => {});
+  }, [userId]);
 
   useEffect(() => {
     refreshHistory();
@@ -190,7 +196,7 @@ export const LocalModelApp: React.FC = () => {
     if (!name) { log('Enter a name to save this model as.', 'error'); return; }
     setIsSaving(true);
     try {
-      await localModel.saveAs(name);
+      await localModel.saveAs(userId, name);
       log(`Saved model as "${name}".`, 'success');
       setSaveName('');
       refreshSavedModels();
@@ -204,7 +210,7 @@ export const LocalModelApp: React.FC = () => {
   const handleLoadModel = async (name: string) => {
     setIsLoadingModel(true);
     try {
-      const result = await localModel.loadSaved(name);
+      const result = await localModel.loadSaved(userId, name);
       const cfg = localModel.currentConfig;
       setCorpus(localModel.currentCorpusText);
       setDModel(cfg.dModel);
@@ -228,7 +234,7 @@ export const LocalModelApp: React.FC = () => {
 
   const handleDeleteModel = async (name: string) => {
     try {
-      await localModel.deleteSaved(name);
+      await localModel.deleteSaved(userId, name);
       log(`Deleted saved model "${name}".`);
       refreshSavedModels();
     } catch (err: any) {

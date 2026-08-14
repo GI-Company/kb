@@ -27,20 +27,26 @@ export const SettingsApp: React.FC = () => {
   const [editValue, setEditValue] = useState('');
   const [saving, setSaving] = useState(false);
   const [sessionUser, setSessionUser] = useState<AppUser | null>(null);
+  const [guestUser, setGuestUser] = useState<AppUser | null>(null);
   const [signingOut, setSigningOut] = useState(false);
 
   useEffect(() => {
     getSession().then(setSessionUser);
+    try {
+      const saved = localStorage.getItem('kernos_guest_user');
+      if (saved) setGuestUser(JSON.parse(saved));
+    } catch { /* corrupt/unavailable storage — just skip the guest badge */ }
   }, []);
 
+  // Covers both real accounts (Supabase signOut) and guest sessions
+  // (just clearing the locally-saved identity) — either way, reloading
+  // with no session left drops back into App.tsx's resolveSessionAndEnter(),
+  // which falls through to the login screen when it finds neither.
   const handleSignOut = async () => {
     setSigningOut(true);
     await signOut();
     resetAnalyticsIdentity();
     localStorage.removeItem('kernos_guest_user');
-    // Simplest reliable way to reset every piece of in-memory app state
-    // (App.tsx's boot phase, kernel bus, open windows) back to a clean
-    // logged-out boot rather than trying to unwind it all by hand.
     window.location.reload();
   };
 
@@ -101,6 +107,21 @@ export const SettingsApp: React.FC = () => {
             <div>
               <div className="text-sm text-white">{sessionUser.username}</div>
               <div className="text-[11px] text-gray-500">Signed in</div>
+            </div>
+            <button
+              onClick={handleSignOut}
+              disabled={signingOut}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-red-500/10 border border-red-500/20 text-red-400 text-xs font-medium hover:bg-red-500/20 disabled:opacity-40 transition-colors"
+            >
+              {signingOut ? <Loader2 size={12} className="animate-spin" /> : <LogOut size={12} />}
+              Sign Out
+            </button>
+          </div>
+        ) : guestUser ? (
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm text-white">{guestUser.username}</div>
+              <div className="text-[11px] text-gray-500">Guest session — data stays on this browser only</div>
             </div>
             <button
               onClick={handleSignOut}

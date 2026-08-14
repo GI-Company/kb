@@ -23,7 +23,7 @@ import { TrainingWorkerPool } from '../src/bnlm/worker_pool.js';
 // @ts-ignore - plain JS module, no type declarations
 import { crossEntropyLoss } from '../src/bnlm/tensor.js';
 import { runHistoryStore, genHistoryStore } from './localModelHistory';
-import { modelRegistry, SavedModelMeta } from './modelRegistry';
+import { modelStore, SavedModelMeta } from './modelStore';
 
 export type MixerType = 'attention' | 'linear' | 'rwkv';
 
@@ -279,20 +279,22 @@ class LocalModelService {
   }
 
   // ── Named persistence — "first class citizen" of the OS: a trained model
-  // survives a reload and can be switched between multiple saved ones. ──
+  // survives a reload and can be switched between multiple saved ones.
+  // Dispatched per-user by lib/modelStore.ts: guests get IndexedDB, real
+  // accounts get Supabase's local_models table + Storage bucket. ──
 
-  async listSaved(): Promise<SavedModelMeta[]> {
-    return modelRegistry.list();
+  async listSaved(userId: string): Promise<SavedModelMeta[]> {
+    return modelStore.list(userId);
   }
 
-  async saveAs(name: string): Promise<void> {
+  async saveAs(userId: string, name: string): Promise<void> {
     if (!this.model || !this.tokenizer) {
       throw new Error('Local model not initialized — train one first.');
     }
     const params = this.model.parameters();
     const paramBuffers: ArrayBuffer[] = params.map((p: any) => p.data.buffer.slice(p.data.byteOffset, p.data.byteOffset + p.data.byteLength));
     const paramShapes: number[][] = params.map((p: any) => p.shape);
-    await modelRegistry.save({
+    await modelStore.save(userId, {
       name,
       savedAt: new Date().toISOString(),
       config: this.config,
@@ -305,8 +307,8 @@ class LocalModelService {
     });
   }
 
-  async loadSaved(name: string): Promise<InitResult> {
-    const record = await modelRegistry.load(name);
+  async loadSaved(userId: string, name: string): Promise<InitResult> {
+    const record = await modelStore.load(userId, name);
     if (!record) throw new Error(`No saved model named "${name}".`);
 
     const tokenizer = new CharTokenizer(record.vocabChars);
@@ -338,8 +340,8 @@ class LocalModelService {
     return { vocabSize: tokenizer.vocabSize, paramCount: model.paramCount(), documents: documents.length };
   }
 
-  async deleteSaved(name: string): Promise<void> {
-    await modelRegistry.remove(name);
+  async deleteSaved(userId: string, name: string): Promise<void> {
+    await modelStore.remove(userId, name);
   }
 
   private filterToVocab(text: string): string {

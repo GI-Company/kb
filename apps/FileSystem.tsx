@@ -1,24 +1,30 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { vfs } from '../lib/vfs';
 import { useOS } from '../store';
 import { FileNode } from '../types';
+import { getCurrentUserId } from '../lib/auth';
 import { Folder, FileText, ChevronRight, Home, RefreshCw, FilePlus, FolderPlus, Trash2, Edit2, Cloud } from 'lucide-react';
 
 export const FileSystemApp: React.FC = () => {
   const [files, setFiles] = useState<FileNode[]>([]);
   const [pathStack, setPathStack] = useState<string[]>(['home']);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [userId, setUserId] = useState('guest');
   const { openWindow } = useOS();
+
+  useEffect(() => {
+    getCurrentUserId().then(setUserId);
+  }, []);
 
   const currentPath = pathStack[pathStack.length - 1];
 
-  const refresh = () => {
-    setFiles(vfs.list(currentPath));
-  };
+  const refresh = useCallback(() => {
+    vfs.list(currentPath, userId).then(setFiles);
+  }, [currentPath, userId]);
 
   useEffect(() => {
     refresh();
-  }, [currentPath]);
+  }, [refresh]);
 
   const navigateTo = (id: string) => {
     setPathStack(prev => [...prev, id]);
@@ -45,29 +51,29 @@ export const FileSystemApp: React.FC = () => {
     }
   };
 
-  const handleCreate = (type: 'file' | 'directory') => {
+  const handleCreate = async (type: 'file' | 'directory') => {
     const name = prompt(`Enter ${type} name:`);
     if (name) {
-      vfs.create(currentPath, name, type);
+      await vfs.create(currentPath, name, type, userId);
       refresh();
     }
   };
 
-  const handleRename = () => {
+  const handleRename = async () => {
     if (!selectedId) return;
     const file = files.find(f => f.id === selectedId);
     if (!file) return;
     const newName = prompt(`Rename ${file.name} to:`, file.name);
     if (newName && newName !== file.name) {
-      vfs.rename(selectedId, newName);
+      await vfs.rename(selectedId, newName, userId);
       refresh();
     }
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!selectedId) return;
     if (confirm('Delete selected item?')) {
-      vfs.remove(selectedId);
+      await vfs.remove(selectedId, userId);
       setSelectedId(null);
       refresh();
     }

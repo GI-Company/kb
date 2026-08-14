@@ -1,10 +1,29 @@
-// Client-side virtual filesystem — used directly by FileSystem.tsx/Editor.tsx
-// instead of round-tripping through the kernel bus, since there's no server
-// to own a real filesystem anymore. localStorage rather than IndexedDB:
-// everything stored here is small text files, so the simpler synchronous
-// API outweighs IndexedDB's extra capacity/async complexity for v1.
+// Virtual filesystem — used by FileSystem.tsx/Editor.tsx/CDE.tsx instead of
+// round-tripping through the kernel bus, since there's no server to own a
+// real filesystem. Dual-backend, same split as lib/chatStore.ts: guests get
+// localStorage (this browser only), real accounts get Supabase's vfs_nodes
+// table (see supabase/schema.sql) so files sync across devices.
+//
+// Every method takes a userId so the caller doesn't need to separately
+// track which backend applies — the id's shape (see isGuestId) decides.
+// The literal string 'home' is the shared root sentinel for both backends:
+// the localStorage tree has always used it as a real node id, and for
+// Supabase it maps to parent_id IS NULL (no actual 'home' row exists there).
 
 import { FileNode } from '../types';
+import { supabase, isSupabaseConfigured } from './supabaseClient';
+
+const ROOT_SENTINEL = 'home';
+
+function isGuestId(userId: string): boolean {
+  return !isSupabaseConfigured || userId.startsWith('guest-') || userId === 'guest';
+}
+
+// ── localStorage backend (guests) ──────────────────────────────────────
+// Logic unchanged from the original synchronous version — just wrapped to
+// return Promises so callers have one uniform async interface regardless
+// of backend. No per-user partitioning: there's only ever one active guest
+// identity per browser, so a single shared tree is correct, same as before.
 
 const STORAGE_KEY = 'kernos_vfs_v1';
 
@@ -13,26 +32,26 @@ interface VfsState {
 }
 
 function seedInitialState(): VfsState {
-  const home: FileNode = { id: 'home', name: 'home', type: 'directory', children: [], parentId: null };
-  return { nodes: { home } };
+  const home: FileNode = { id: ROOT_SENTINEL, name: 'home', type: 'directory', children: [], parentId: null };
+  return { nodes: { [ROOT_SENTINEL]: home } };
 }
 
-function readState(): VfsState {
+function readLocalState(): VfsState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as VfsState;
-      if (parsed.nodes?.home) return parsed;
+      if (parsed.nodes?.[ROOT_SENTINEL]) return parsed;
     }
   } catch {
     // Corrupt or unavailable storage — fall through to a fresh state.
   }
   const initial = seedInitialState();
-  writeState(initial);
+  writeLocalState(initial);
   return initial;
 }
 
-function writeState(state: VfsState): void {
+function writeLocalState(state: VfsState): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch {
@@ -44,29 +63,29 @@ function genId(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
-export const vfs = {
-  list(parentId: string): FileNode[] {
-    const state = readState();
+const localBackend = {
+  async list(parentId: string): Promise<FileNode[]> {
+    const state = readLocalState();
     const parent = state.nodes[parentId];
     if (!parent?.children) return [];
     return parent.children.map(id => state.nodes[id]).filter((n): n is FileNode => !!n);
   },
 
-  read(id: string): string {
-    return readState().nodes[id]?.content ?? '';
+  async read(id: string): Promise<string> {
+    return readLocalState().nodes[id]?.content ?? '';
   },
 
-  write(id: string, content: string): boolean {
-    const state = readState();
+  async write(id: string, content: string): Promise<boolean> {
+    const state = readLocalState();
     if (!state.nodes[id]) return false;
     state.nodes[id] = { ...state.nodes[id], content };
-    writeState(state);
+    writeLocalState(state);
     return true;
   },
 
-  create(parentId: string, name: string, type: 'file' | 'directory', content = ''): FileNode {
-    const state = readState();
-    const parent = state.nodes[parentId] || state.nodes['home'];
+  async create(parentId: string, name: string, type: 'file' | 'directory', content = ''): Promise<FileNode> {
+    const state = readLocalState();
+    const parent = state.nodes[parentId] || state.nodes[ROOT_SENTINEL];
     const id = genId();
     const node: FileNode = {
       id,
@@ -79,24 +98,23 @@ export const vfs = {
     state.nodes[id] = node;
     parent.children = [...(parent.children || []), id];
     state.nodes[parent.id] = parent;
-    writeState(state);
+    writeLocalState(state);
     return node;
   },
 
-  rename(id: string, newName: string): boolean {
-    const state = readState();
+  async rename(id: string, newName: string): Promise<boolean> {
+    const state = readLocalState();
     if (!state.nodes[id]) return false;
     state.nodes[id] = { ...state.nodes[id], name: newName };
-    writeState(state);
+    writeLocalState(state);
     return true;
   },
 
-  remove(id: string): boolean {
-    const state = readState();
+  async remove(id: string): Promise<boolean> {
+    const state = readLocalState();
     const node = state.nodes[id];
-    if (!node || id === 'home') return false;
+    if (!node || id === ROOT_SENTINEL) return false;
 
-    // Recursively drop any children before dropping the node itself.
     const toDelete = [id];
     while (toDelete.length) {
       const cur = toDelete.pop()!;
@@ -110,7 +128,92 @@ export const vfs = {
         children: (state.nodes[node.parentId].children || []).filter(c => c !== id),
       };
     }
-    writeState(state);
+    writeLocalState(state);
     return true;
+  },
+};
+
+// ── Supabase backend (real accounts) ────────────────────────────────────
+// See supabase/schema.sql's vfs_nodes table. `children` isn't stored on
+// the node itself here (unlike the localStorage version) — list() derives
+// it by querying parent_id, the normalized way to represent a tree
+// relationally; nothing in FileSystem.tsx/CDE.tsx reads FileNode.children
+// directly, they only ever use vfs.list()'s return value, so this is a
+// transparent swap.
+
+function toParentId(id: string): string | null {
+  return id === ROOT_SENTINEL ? null : id;
+}
+
+const supabaseBackend = {
+  async list(parentId: string, userId: string): Promise<FileNode[]> {
+    let query = supabase!.from('vfs_nodes').select('id,name,type,mount_source').eq('user_id', userId);
+    const pid = toParentId(parentId);
+    query = pid === null ? query.is('parent_id', null) : query.eq('parent_id', pid);
+    const { data, error } = await query;
+    if (error) throw error;
+    return (data ?? []).map(r => ({ id: r.id, name: r.name, type: r.type, mountSource: r.mount_source ?? undefined }));
+  },
+
+  async read(id: string, userId: string): Promise<string> {
+    const { data, error } = await supabase!.from('vfs_nodes').select('content').eq('id', id).eq('user_id', userId).maybeSingle();
+    if (error) throw error;
+    return data?.content ?? '';
+  },
+
+  async write(id: string, content: string, userId: string): Promise<boolean> {
+    const { error } = await supabase!
+      .from('vfs_nodes')
+      .update({ content, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .eq('user_id', userId);
+    return !error;
+  },
+
+  async create(parentId: string, name: string, type: 'file' | 'directory', userId: string, content = ''): Promise<FileNode> {
+    const { data, error } = await supabase!
+      .from('vfs_nodes')
+      .insert({ user_id: userId, parent_id: toParentId(parentId), name, type, content: type === 'file' ? content : null })
+      .select('id,name,type,mount_source')
+      .single();
+    if (error) throw error;
+    return { id: data.id, name: data.name, type: data.type, mountSource: data.mount_source ?? undefined };
+  },
+
+  async rename(id: string, newName: string, userId: string): Promise<boolean> {
+    const { error } = await supabase!
+      .from('vfs_nodes')
+      .update({ name: newName, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .eq('user_id', userId);
+    return !error;
+  },
+
+  async remove(id: string, userId: string): Promise<boolean> {
+    if (id === ROOT_SENTINEL) return false;
+    // Children cascade via vfs_nodes.parent_id's `on delete cascade`.
+    const { error } = await supabase!.from('vfs_nodes').delete().eq('id', id).eq('user_id', userId);
+    return !error;
+  },
+};
+
+export const vfs = {
+  list(parentId: string, userId: string): Promise<FileNode[]> {
+    return (isGuestId(userId) ? localBackend.list(parentId) : supabaseBackend.list(parentId, userId));
+  },
+  read(id: string, userId: string): Promise<string> {
+    return (isGuestId(userId) ? localBackend.read(id) : supabaseBackend.read(id, userId));
+  },
+  write(id: string, content: string, userId: string): Promise<boolean> {
+    return (isGuestId(userId) ? localBackend.write(id, content) : supabaseBackend.write(id, content, userId));
+  },
+  create(parentId: string, name: string, type: 'file' | 'directory', userId: string, content = ''): Promise<FileNode> {
+    return (isGuestId(userId) ? localBackend.create(parentId, name, type, content) : supabaseBackend.create(parentId, name, type, userId, content));
+  },
+  rename(id: string, newName: string, userId: string): Promise<boolean> {
+    return (isGuestId(userId) ? localBackend.rename(id, newName) : supabaseBackend.rename(id, newName, userId));
+  },
+  remove(id: string, userId: string): Promise<boolean> {
+    return (isGuestId(userId) ? localBackend.remove(id) : supabaseBackend.remove(id, userId));
   },
 };

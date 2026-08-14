@@ -1,27 +1,35 @@
--- Kernos + BNLM — Supabase schema for the planned auth/persistence migration.
+-- Kernos + BNLM — Supabase schema backing the auth/persistence layer.
 --
--- NOT WIRED UP YET. Nothing in the app reads or writes this today — every
--- piece of state currently lives in the browser (localStorage/IndexedDB),
--- scoped to a single "guest" identity (see App.tsx's enterDesktop()). This
--- file is the concrete target for when that changes: each table below maps
--- 1:1 to an existing browser-storage module, so the migration is "swap the
--- implementation behind an existing interface," not a redesign.
+-- Wired up: every table below is live. Real (non-guest) accounts read and
+-- write through it; guests keep using the original browser-only storage
+-- (localStorage/IndexedDB) so the app still works with zero Supabase config.
+-- The dispatcher for each concern picks a backend by the user id's shape
+-- (see e.g. lib/chatStore.ts's isGuestId) — guest ids always look like
+-- "guest-xxxx", real ones are auth.users UUIDs.
 --
---   auth.users (built into Supabase)  -> replaces the guest-identity stub
+--   auth.users (built into Supabase)  -> real account identity
 --   profiles                          -> minimal per-user metadata
---   conversations + messages          -> lib/chatStore.ts (localStorage)
---   vfs_nodes                         -> lib/vfs.ts (localStorage)
---   local_models                      -> lib/modelRegistry.ts (IndexedDB)
+--   conversations + messages          -> lib/chatStore.ts
+--   vfs_nodes                         -> lib/vfs.ts
+--   local_models (+ Storage bucket)   -> lib/modelStore.ts
+--   guest_usage                       -> api/guest-usage.ts's 15-min/day/IP
+--                                        quota — server-only, no RLS policy,
+--                                        never queried from the browser
 --   embeddings                        -> revives the GraphRAG/vector-memory
 --                                        cut from the original design (see
 --                                        ARCHITECTURE.md) — optional, only
---                                        needed if that comes back
+--                                        needed if that comes back; nothing
+--                                        reads/writes it yet
 --
--- Run this in the Supabase SQL editor on a fresh project. Every table has
--- Row Level Security enabled with a policy scoping it to auth.uid() —
--- required before you ever query these with the anon key from the browser,
--- since Supabase's client-side SDK talks to Postgres directly through
--- PostgREST rather than through your own API layer.
+-- Run this in the Supabase SQL editor (safe to re-run — every statement is
+-- if-not-exists/or-replace). Every table except guest_usage has Row Level
+-- Security enabled with a policy scoping it to auth.uid() — required before
+-- you ever query these with the anon key from the browser, since Supabase's
+-- client-side SDK talks to Postgres directly through PostgREST rather than
+-- through your own API layer. guest_usage deliberately has RLS on with NO
+-- policy (zero access via the anon/authenticated roles) since it's only
+-- ever touched server-side with the service-role key — see
+-- lib/supabaseAdmin.ts and its required SUPABASE_SERVICE_ROLE_KEY env var.
 
 -- ─── profiles ────────────────────────────────────────────────────────────
 -- One row per auth.users row. Supabase Auth owns email/password/OAuth;
@@ -128,13 +136,13 @@ create policy "vfs_nodes: crud own" on vfs_nodes
 
 
 -- ─── local_models ────────────────────────────────────────────────────────
--- Replaces lib/modelRegistry.ts (currently IndexedDB). Weight buffers are
--- binary and can run past what's comfortable in a Postgres row even as
--- bytea — store them in Supabase Storage instead (bucket: "model-weights",
--- path convention below) and keep only the pointer + metadata here.
--- param_shapes is required to split the single concatenated weights blob
--- back into per-tensor Float32Arrays on load (mirrors what
--- lib/localModel.ts's loadSaved() does today, param-by-param).
+-- Real-account backend for lib/modelStore.ts (guests still use
+-- lib/modelRegistry.ts's IndexedDB directly). Weight buffers are binary and
+-- can run past what's comfortable in a Postgres row even as bytea — stored
+-- in Supabase Storage instead (bucket: "model-weights", path convention
+-- below), keeping only the pointer + metadata here. param_shapes is what
+-- lib/modelStore.ts uses to split the single concatenated weights blob
+-- back into per-tensor Float32Arrays on load.
 
 create table if not exists local_models (
   id uuid primary key default gen_random_uuid(),
@@ -167,6 +175,45 @@ on conflict (id) do nothing;
 create policy "model-weights: crud own folder" on storage.objects
   for all using (bucket_id = 'model-weights' and (storage.foldername(name))[1] = auth.uid()::text)
   with check (bucket_id = 'model-weights' and (storage.foldername(name))[1] = auth.uid()::text);
+
+
+-- ─── guest_usage ─────────────────────────────────────────────────────────
+-- Backs the 15-min/day/IP guest quota (api/guest-usage.ts, lib/guestUsage.ts).
+-- Guests are never authenticated, so there's no auth.uid() to scope a
+-- normal RLS policy to here — deliberately NO policies are defined, which
+-- with RLS enabled means the anon/authenticated roles get zero access.
+-- Only the service-role client (lib/supabaseAdmin.ts, server-side only)
+-- can read/write this table, since the service role bypasses RLS entirely.
+-- IPs are stored as a SHA-256 hash, never raw.
+
+create table if not exists guest_usage (
+  ip_hash text not null,
+  usage_date date not null,
+  seconds_used int not null default 0,
+  updated_at timestamptz not null default now(),
+  primary key (ip_hash, usage_date)
+);
+
+alter table guest_usage enable row level security;
+
+-- Atomic upsert-and-increment, called via supabaseAdmin.rpc() from
+-- api/guest-usage.ts. security definer so it can write to guest_usage even
+-- though no policy grants the calling role direct access — the function
+-- itself is the only sanctioned way in, and it's only ever invoked with the
+-- service-role key from server-side code, never from the browser.
+create or replace function increment_guest_usage(p_ip_hash text, p_usage_date date, p_seconds int)
+returns int as $$
+declare
+  new_total int;
+begin
+  insert into guest_usage (ip_hash, usage_date, seconds_used, updated_at)
+  values (p_ip_hash, p_usage_date, greatest(p_seconds, 0), now())
+  on conflict (ip_hash, usage_date)
+  do update set seconds_used = guest_usage.seconds_used + greatest(p_seconds, 0), updated_at = now()
+  returning seconds_used into new_total;
+  return new_total;
+end;
+$$ language plpgsql security definer;
 
 
 -- ─── embeddings (optional, future) ──────────────────────────────────────

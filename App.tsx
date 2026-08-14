@@ -28,12 +28,13 @@ import { FeatureTour } from './components/ui/FeatureTour';
 import { kernel } from './services/kernel';
 import { AppUser, getSession, createGuestUser } from './lib/auth';
 import { identifyUser } from './lib/analytics';
+import { startGuestUsageTracking, GUEST_LIMIT_MESSAGE_KEY } from './lib/guestUsage';
 import { AnimatePresence } from 'framer-motion';
 
 type BootPhase = 'boot' | 'bios' | 'login' | 'desktop';
 
 const App: React.FC = () => {
-  const { windows, liteMode, openWalkthrough } = useOS();
+  const { windows, liteMode, openWalkthrough, setGuestUsage } = useOS();
   const [phase, setPhase] = useState<BootPhase>('boot');
   const [bootLines, setBootLines] = useState<string[]>([]);
   const [user, setUser] = useState<AppUser | null>(null);
@@ -77,6 +78,28 @@ const App: React.FC = () => {
     try { seen = localStorage.getItem(WALKTHROUGH_SEEN_KEY) === 'true'; } catch { /* default to seen=true, don't nag if storage is unavailable */ }
     if (!seen) openWalkthrough();
   }, [phase]);
+
+  // 15-min/day/IP guest quota (see api/guest-usage.ts). Real accounts are
+  // never subject to this — only starts tracking while the current user is
+  // a guest, and stops the moment they sign in, sign out, or leave desktop.
+  useEffect(() => {
+    if (phase !== 'desktop' || !user?.isGuest) return;
+    const stop = startGuestUsageTracking(({ remainingSeconds, allowed }) => {
+      setGuestUsage(remainingSeconds, !allowed);
+      if (!allowed) {
+        try {
+          localStorage.setItem(
+            GUEST_LIMIT_MESSAGE_KEY,
+            "You've used today's 15 minutes of guest access. Sign in for unlimited access, or come back tomorrow."
+          );
+          localStorage.removeItem('kernos_guest_user');
+        } catch { /* best-effort */ }
+        setUser(null);
+        setPhase('login');
+      }
+    });
+    return stop;
+  }, [phase, user]);
 
   // Real Supabase session takes priority; otherwise a previously-chosen
   // local guest identity; otherwise show the login screen (which itself
