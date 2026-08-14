@@ -39,13 +39,23 @@ export const useOS = create<OSStore>((set) => ({
     if (appId === 'cde') { width = 1100; height = 700; }
     if (appId === 'local-model') { width = 1020; height = 660; }
 
+    const viewportW = typeof window !== 'undefined' ? window.innerWidth : 1280;
+    const viewportH = typeof window !== 'undefined' ? window.innerHeight - 52 : 800; // minus taskbar
+
+    // Cap the window's actual size to the viewport too, not just its
+    // position — the fixed per-app sizes above (CDE 1100x700, Local Model
+    // 1020x660, ...) are upper bounds, not requirements. Without this a
+    // wide window on a smaller screen kept its full fixed size and either
+    // visually dominated the viewport or overflowed it outright, even
+    // though the earlier position-clamping fix kept its top-left corner
+    // on screen.
+    width = Math.min(width, viewportW - 40);
+    height = Math.min(height, viewportH - 40);
+
     // Cascade new windows down-right, but wrap around and clamp to the
     // viewport instead of drifting further off-screen with every open —
     // previously this grew unbounded (100 + count*20 forever), so the 5th+
-    // window (or any wide one, like CDE/Local Model, on a smaller screen)
-    // could spawn already partly or fully off-screen.
-    const viewportW = typeof window !== 'undefined' ? window.innerWidth : 1280;
-    const viewportH = typeof window !== 'undefined' ? window.innerHeight - 52 : 800; // minus taskbar
+    // window could spawn already partly or fully off-screen.
     const cascade = state.windows.length % 8;
     const x = Math.min(80 + cascade * 24, Math.max(20, viewportW - width - 20));
     const y = Math.min(60 + cascade * 24, Math.max(20, viewportH - height - 20));
