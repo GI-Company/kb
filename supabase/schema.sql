@@ -21,8 +21,10 @@
 --                                        needed if that comes back; nothing
 --                                        reads/writes it yet
 --
--- Run this in the Supabase SQL editor (safe to re-run — every statement is
--- if-not-exists/or-replace). Every table except guest_usage has Row Level
+-- Run this in the Supabase SQL editor — safe to re-run any time (tables use
+-- if-not-exists, functions/triggers use or-replace, and every policy is
+-- dropped-if-exists immediately before being recreated, since Postgres has
+-- no CREATE POLICY IF NOT EXISTS). Every table except guest_usage has Row Level
 -- Security enabled with a policy scoping it to auth.uid() — required before
 -- you ever query these with the anon key from the browser, since Supabase's
 -- client-side SDK talks to Postgres directly through PostgREST rather than
@@ -45,8 +47,10 @@ create table if not exists profiles (
 
 alter table profiles enable row level security;
 
+drop policy if exists "profiles: read own" on profiles;
 create policy "profiles: read own" on profiles
   for select using (auth.uid() = id);
+drop policy if exists "profiles: update own" on profiles;
 create policy "profiles: update own" on profiles
   for update using (auth.uid() = id);
 
@@ -60,6 +64,7 @@ begin
 end;
 $$ language plpgsql security definer;
 
+drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function handle_new_user();
@@ -84,6 +89,7 @@ create index if not exists conversations_user_id_idx on conversations(user_id);
 
 alter table conversations enable row level security;
 
+drop policy if exists "conversations: crud own" on conversations;
 create policy "conversations: crud own" on conversations
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
@@ -101,6 +107,7 @@ create index if not exists messages_conversation_id_idx on messages(conversation
 
 alter table messages enable row level security;
 
+drop policy if exists "messages: crud via owned conversation" on messages;
 create policy "messages: crud via owned conversation" on messages
   for all using (
     exists (select 1 from conversations c where c.id = messages.conversation_id and c.user_id = auth.uid())
@@ -131,6 +138,7 @@ create index if not exists vfs_nodes_user_parent_idx on vfs_nodes(user_id, paren
 
 alter table vfs_nodes enable row level security;
 
+drop policy if exists "vfs_nodes: crud own" on vfs_nodes;
 create policy "vfs_nodes: crud own" on vfs_nodes
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
@@ -162,6 +170,7 @@ create table if not exists local_models (
 
 alter table local_models enable row level security;
 
+drop policy if exists "local_models: crud own" on local_models;
 create policy "local_models: crud own" on local_models
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
@@ -172,6 +181,7 @@ insert into storage.buckets (id, name, public)
 values ('model-weights', 'model-weights', false)
 on conflict (id) do nothing;
 
+drop policy if exists "model-weights: crud own folder" on storage.objects;
 create policy "model-weights: crud own folder" on storage.objects
   for all using (bucket_id = 'model-weights' and (storage.foldername(name))[1] = auth.uid()::text)
   with check (bucket_id = 'model-weights' and (storage.foldername(name))[1] = auth.uid()::text);
@@ -240,5 +250,6 @@ create index if not exists embeddings_user_id_idx on embeddings(user_id);
 
 alter table embeddings enable row level security;
 
+drop policy if exists "embeddings: crud own" on embeddings;
 create policy "embeddings: crud own" on embeddings
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
