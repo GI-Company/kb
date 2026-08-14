@@ -82,6 +82,10 @@ export const AIChatApp: React.FC = () => {
     const [showSelector, setShowSelector] = useState(false);
     const [directMode, setDirectMode] = useState(false);
     const [streamBuffer, setStreamBuffer] = useState('');
+    // Mirrors streamBuffer for synchronous reads inside the kernel.subscribe
+    // handler below — see the 'agent.chat:reply' case for why this matters.
+    const streamBufferRef = useRef('');
+    useEffect(() => { streamBufferRef.current = streamBuffer; }, [streamBuffer]);
     const bottomRef = useRef<HTMLDivElement>(null);
     const agentCheckTimer = useRef<ReturnType<typeof setTimeout>>();
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -219,37 +223,44 @@ export const AIChatApp: React.FC = () => {
                 const payload = env.payload as any;
                 const fallback = payload?.reply || '(no response)';
                 const agentId = env.from;
-                setStreamBuffer(prev => {
-                    const raw = prev || fallback;
-                    const { thinking, response } = extractThinking(raw);
-                    const toolCall = extractToolCall(response);
-                    const displayResponse = toolCall ? stripToolBlock(response) : response;
-                    if (displayResponse || thinking) {
+                // Read via the ref, not a setStreamBuffer(prev => ...) updater —
+                // React 18 StrictMode double-invokes updater functions passed to
+                // setState to catch exactly this: side effects (setMessages,
+                // kicking off a tool-call) nested inside another setState's
+                // updater get called twice, producing duplicate messages and
+                // (worse) a tool call actually running twice. Doing the state
+                // reads/writes as plain top-level calls in this handler avoids
+                // that entirely — kernel.subscribe callbacks aren't updater
+                // functions, so they're never double-invoked.
+                const raw = streamBufferRef.current || fallback;
+                const { thinking, response } = extractThinking(raw);
+                const toolCall = extractToolCall(response);
+                const displayResponse = toolCall ? stripToolBlock(response) : response;
+                if (displayResponse || thinking) {
+                    setMessages(msgs => [...msgs, {
+                        id: Math.random().toString(36),
+                        role: 'agent',
+                        content: displayResponse || '(thinking only)',
+                        thinking: thinking || undefined,
+                        agentId,
+                        time: new Date().toLocaleTimeString()
+                    }]);
+                }
+                if (toolCall) {
+                    const publishResult = (content: string) => {
                         setMessages(msgs => [...msgs, {
                             id: Math.random().toString(36),
                             role: 'agent',
-                            content: displayResponse || '(thinking only)',
-                            thinking: thinking || undefined,
-                            agentId,
+                            content,
+                            agentId: 'bnlm-local',
                             time: new Date().toLocaleTimeString()
                         }]);
-                    }
-                    if (toolCall) {
-                        const publishResult = (content: string) => {
-                            setMessages(msgs => [...msgs, {
-                                id: Math.random().toString(36),
-                                role: 'agent',
-                                content,
-                                agentId: 'bnlm-local',
-                                time: new Date().toLocaleTimeString()
-                            }]);
-                        };
-                        runLocalModelTool(toolCall)
-                            .then(result => publishResult(`🧠 ${result}`))
-                            .catch((err: any) => publishResult(`⚠️ ${err?.message || err}`));
-                    }
-                    return '';
-                });
+                    };
+                    runLocalModelTool(toolCall)
+                        .then(result => publishResult(`🧠 ${result}`))
+                        .catch((err: any) => publishResult(`⚠️ ${err?.message || err}`));
+                }
+                setStreamBuffer('');
                 setIsWaiting(false);
             }
 
@@ -266,20 +277,21 @@ export const AIChatApp: React.FC = () => {
             }
 
             if (env.topic === 'ai.done') {
-                setStreamBuffer(prev => {
-                    if (prev) {
-                        const { thinking, response } = extractThinking(prev);
-                        setMessages(msgs => [...msgs, {
-                            id: Math.random().toString(36),
-                            role: 'agent',
-                            content: response || '(thinking only)',
-                            thinking: thinking || undefined,
-                            agentId: 'kernos-lm',
-                            time: new Date().toLocaleTimeString()
-                        }]);
-                    }
-                    return '';
-                });
+                // Same fix as 'agent.chat:reply' above — read via the ref
+                // instead of nesting setMessages inside a setStreamBuffer updater.
+                const prev = streamBufferRef.current;
+                if (prev) {
+                    const { thinking, response } = extractThinking(prev);
+                    setMessages(msgs => [...msgs, {
+                        id: Math.random().toString(36),
+                        role: 'agent',
+                        content: response || '(thinking only)',
+                        thinking: thinking || undefined,
+                        agentId: 'kernos-lm',
+                        time: new Date().toLocaleTimeString()
+                    }]);
+                }
+                setStreamBuffer('');
                 setIsWaiting(false);
             }
         });

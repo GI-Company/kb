@@ -32,7 +32,15 @@ export async function signUp(email: string, password: string, username: string):
   if (!supabase) throw new Error('Accounts aren\'t configured on this deployment yet — continue as guest instead.');
   const { data, error } = await supabase.auth.signUp({ email, password, options: { data: { username } } });
   if (error) throw error;
-  if (!data.user) throw new Error('Check your email to confirm your account, then sign in.');
+  // Supabase returns a `user` object either way — checking that alone was
+  // the bug: with email confirmation on (this project's default), `user`
+  // is set but `session` is null until the user clicks the confirmation
+  // link, and treating that as "logged in" left the app showing the
+  // desktop with no real session behind it (confirmed live: zero sb-*
+  // key ever landed in localStorage). `session` is the actual signal.
+  if (!data.session || !data.user) {
+    throw new Error('Account created — check your email to confirm it, then sign in.');
+  }
   return toAppUser(data.user);
 }
 
