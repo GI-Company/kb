@@ -24,6 +24,7 @@ import { TimelineSlider } from './apps/TimelineSlider';
 import { CinematicBoot } from './components/ui/CinematicBoot';
 import { ContextMenuProvider } from './components/ui/ContextMenu';
 import { Walkthrough, WALKTHROUGH_SEEN_KEY } from './components/ui/Walkthrough';
+import { FeatureTour } from './components/ui/FeatureTour';
 import { kernel } from './services/kernel';
 import { AppUser, getSession, createGuestUser } from './lib/auth';
 import { identifyUser } from './lib/analytics';
@@ -206,6 +207,7 @@ const App: React.FC = () => {
         <Taskbar />
         <AudioSystem />
         <Walkthrough />
+        <FeatureTour />
       </div>
     </ContextMenuProvider>
   );

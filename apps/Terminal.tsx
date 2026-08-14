@@ -201,6 +201,7 @@ export const TerminalApp: React.FC = () => {
         <span className="text-cyan-500 mr-2">➜ ~</span>
         <div className="relative flex-1">
           <input
+            data-tour="terminal-input"
             ref={inputRef}
             type="text"
             value={input}

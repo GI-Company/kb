@@ -248,7 +248,7 @@ export const LocalModelApp: React.FC = () => {
         </div>
 
         <div className="p-3 flex flex-col gap-3">
-          <div className="border border-purple-500/20 bg-purple-500/5 rounded-lg p-2 flex flex-col gap-2">
+          <div data-tour="lm-dataset" className="border border-purple-500/20 bg-purple-500/5 rounded-lg p-2 flex flex-col gap-2">
             <label className="text-[10px] text-purple-300 uppercase tracking-wide flex items-center gap-1"><Wand2 size={10} /> Generate dataset with Groq</label>
             <input
               type="text"
@@ -270,7 +270,7 @@ export const LocalModelApp: React.FC = () => {
             </div>
           </div>
 
-          <div>
+          <div data-tour="lm-corpus">
             <label className="text-[10px] text-gray-500 uppercase tracking-wide">Training text</label>
             <textarea
               value={corpus}
@@ -280,7 +280,7 @@ export const LocalModelApp: React.FC = () => {
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
+          <div data-tour="lm-config" className="grid grid-cols-2 gap-2">
             <NumberField label="d_model" value={dModel} onChange={setDModel} />
             <NumberField label="layers" value={numLayers} onChange={setNumLayers} />
             <NumberField label="heads" value={numHeads} onChange={setNumHeads} />
@@ -304,6 +304,7 @@ export const LocalModelApp: React.FC = () => {
           </div>
 
           <button
+            data-tour="lm-init"
             onClick={handleInit}
             disabled={isInitializing}
             className="flex items-center justify-center gap-2 px-3 py-2 bg-cyan-600/20 border border-cyan-500/30 hover:bg-cyan-600/30 disabled:opacity-40 rounded-lg text-xs font-medium text-cyan-300 transition-colors"
@@ -312,7 +313,7 @@ export const LocalModelApp: React.FC = () => {
             Initialize / Reset Model
           </button>
 
-          <div className="border-t border-white/5 pt-3 flex flex-col gap-2">
+          <div data-tour="lm-saved" className="border-t border-white/5 pt-3 flex flex-col gap-2">
             <label className="text-[10px] text-gray-500 uppercase tracking-wide">Saved models</label>
             <div className="flex gap-2">
               <input
@@ -358,6 +359,7 @@ export const LocalModelApp: React.FC = () => {
           <div className="flex items-center gap-2">
             <NumberField label="steps" value={steps} onChange={setSteps} compact />
             <button
+              data-tour="lm-train"
               onClick={handleTrain}
               disabled={!isReady || isTraining}
               className="flex items-center gap-1.5 px-3 py-2 bg-purple-600 hover:bg-purple-500 disabled:bg-gray-800 disabled:text-gray-600 rounded-lg text-xs font-medium transition-colors"
@@ -388,7 +390,7 @@ export const LocalModelApp: React.FC = () => {
           </div>
         )}
 
-        <div className="p-3 border-b border-white/5 flex items-center gap-2 flex-wrap">
+        <div data-tour="lm-generate" className="p-3 border-b border-white/5 flex items-center gap-2 flex-wrap">
           <input
             type="text"
             value={prompt}
@@ -416,7 +418,7 @@ export const LocalModelApp: React.FC = () => {
 
         {/* Score: the "more than generation" use of a trained model — how
             well does this text match what it learned, without sampling anything new. */}
-        <div className="p-3 border-b border-white/5 flex items-center gap-2 flex-wrap">
+        <div data-tour="lm-score" className="p-3 border-b border-white/5 flex items-center gap-2 flex-wrap">
           <input
             type="text"
             value={scoreText}

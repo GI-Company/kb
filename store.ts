@@ -30,6 +30,13 @@ interface OSStore {
   walkthroughOpen: boolean;
   openWalkthrough: () => void;
   closeWalkthrough: () => void;
+
+  // components/ui/FeatureTour.tsx reads this — Window.tsx's per-window "?"
+  // button sets it to that window's appId to spotlight that app's own
+  // controls (distinct from walkthroughOpen, which tours the taskbar).
+  activeTourAppId: string | null;
+  openFeatureTour: (appId: string) => void;
+  closeFeatureTour: () => void;
 }
 
 function readLiteModePref(): boolean {
@@ -48,6 +55,9 @@ export const useOS = create<OSStore>((set) => ({
   walkthroughOpen: false,
   openWalkthrough: () => set({ walkthroughOpen: true }),
   closeWalkthrough: () => set({ walkthroughOpen: false }),
+  activeTourAppId: null,
+  openFeatureTour: (appId) => set({ activeTourAppId: appId }),
+  closeFeatureTour: () => set({ activeTourAppId: null }),
   liteMode: readLiteModePref(),
   setLiteMode: (v) => {
     try { localStorage.setItem('kernos_lite_mode', String(v)); } catch { /* best-effort */ }
@@ -74,13 +84,15 @@ export const useOS = create<OSStore>((set) => ({
 
     // Cap the window's actual size to the viewport too, not just its
     // position — the fixed per-app sizes above (CDE 1100x700, Local Model
-    // 1020x660, ...) are upper bounds, not requirements. Without this a
-    // wide window on a smaller screen kept its full fixed size and either
-    // visually dominated the viewport or overflowed it outright, even
-    // though the earlier position-clamping fix kept its top-left corner
-    // on screen.
-    width = Math.min(width, viewportW - 40);
-    height = Math.min(height, viewportH - 40);
+    // 1020x660, ...) are upper bounds, not requirements. A pure
+    // viewport-minus-margin cap still lets a window eat ~95%+ of a laptop
+    // screen (e.g. CDE's 1100x700 on a 1366x768 display), which reads as
+    // "too large" even though nothing technically overflows — so also cap
+    // to a fraction of the viewport, leaving visible desktop around it.
+    const maxW = Math.min(viewportW - 40, viewportW * 0.82);
+    const maxH = Math.min(viewportH - 40, viewportH * 0.82);
+    width = Math.min(width, maxW);
+    height = Math.min(height, maxH);
 
     // Cascade new windows down-right, but wrap around and clamp to the
     // viewport instead of drifting further off-screen with every open —

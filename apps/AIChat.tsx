@@ -422,6 +422,7 @@ export const AIChatApp: React.FC = () => {
                     <div className="flex items-center gap-2">
                         {/* History toggle */}
                         <button
+                            data-tour="chat-history"
                             onClick={() => { setShowHistory(prev => !prev); kernel.publish('chat.list', { user_id: userId }); }}
                             className={`p-1.5 rounded transition-colors ${showHistory ? 'bg-purple-500/20 text-purple-400' : 'hover:bg-white/10 text-gray-500 hover:text-white'}`}
                             title="Chat History"
@@ -430,6 +431,7 @@ export const AIChatApp: React.FC = () => {
                         </button>
                         {/* New Chat */}
                         <button
+                            data-tour="chat-new"
                             onClick={startNewChat}
                             className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
                             title="New Chat"
@@ -449,6 +451,7 @@ export const AIChatApp: React.FC = () => {
                     {!directMode ? (
                         <div className="relative">
                             <button
+                                data-tour="chat-agent-selector"
                                 onClick={() => setShowSelector(!showSelector)}
                                 className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs hover:bg-white/10 transition-colors"
                             >
@@ -560,6 +563,7 @@ export const AIChatApp: React.FC = () => {
                             className="hidden"
                         />
                         <button
+                            data-tour="chat-image"
                             onClick={() => fileInputRef.current?.click()}
                             className="px-3 py-2.5 bg-white/5 border border-white/10 rounded-lg text-gray-400 hover:text-cyan-400 hover:border-cyan-500/30 transition-colors"
                             title="Attach image for VL analysis"
@@ -567,6 +571,7 @@ export const AIChatApp: React.FC = () => {
                             <ImagePlus size={16} />
                         </button>
                         <input
+                            data-tour="chat-input"
                             type="text"
                             value={input}
                             onChange={e => setInput(e.target.value)}

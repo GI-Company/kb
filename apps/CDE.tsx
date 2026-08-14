@@ -413,12 +413,12 @@ export const CDEApp: React.FC = () => {
         <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={() => setShowSearch(prev => !prev)} className={`p-1.5 rounded-md hover:bg-white/10 transition-colors ${showSearch ? 'bg-white/10 text-white' : 'text-gray-400 hover:text-white'}`} title="Find (⌘F)">
           <Search size={14} />
         </motion.button>
-        <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={handleAiReview} className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-purple-500/15 hover:bg-purple-500/25 border border-purple-500/30 text-purple-400 text-[10px] font-bold transition-all shadow-[0_0_10px_rgba(168,85,247,0.1)]" title="AI Code Review">
+        <motion.button data-tour="cde-ai-review" whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={handleAiReview} className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-purple-500/15 hover:bg-purple-500/25 border border-purple-500/30 text-purple-400 text-[10px] font-bold transition-all shadow-[0_0_10px_rgba(168,85,247,0.1)]" title="AI Code Review">
           <Brain size={12} />
           <span>AI REVIEW</span>
         </motion.button>
         <div className="w-px h-5 bg-white/10 mx-1" />
-        <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={() => setTerminalVisible(prev => !prev)} className={`p-1.5 rounded-md hover:bg-white/10 transition-all ${terminalVisible ? 'text-cyan-400 bg-cyan-500/10 shadow-[0_0_10px_rgba(0,240,255,0.1)]' : 'text-gray-400'}`} title="Toggle Terminal">
+        <motion.button data-tour="cde-terminal-toggle" whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={() => setTerminalVisible(prev => !prev)} className={`p-1.5 rounded-md hover:bg-white/10 transition-all ${terminalVisible ? 'text-cyan-400 bg-cyan-500/10 shadow-[0_0_10px_rgba(0,240,255,0.1)]' : 'text-gray-400'}`} title="Toggle Terminal">
           <TerminalIcon size={14} />
         </motion.button>
       </div>
@@ -451,7 +451,7 @@ export const CDEApp: React.FC = () => {
       {/* ── Main Content Area ── */}
       <div className="flex-1 flex overflow-hidden">
         {/* ── File Tree Panel ── */}
-        <div className="w-56 bg-[#0a0a0f]/50 border-r border-white/5 flex flex-col shrink-0 overflow-hidden backdrop-blur-sm">
+        <div data-tour="cde-explorer" className="w-56 bg-[#0a0a0f]/50 border-r border-white/5 flex flex-col shrink-0 overflow-hidden backdrop-blur-sm">
           <div className="h-10 px-4 flex items-center justify-between border-b border-white/5 shrink-0 bg-[#0f0f13]/50">
             <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Explorer</span>
             <div className="flex items-center gap-1">
@@ -493,7 +493,7 @@ export const CDEApp: React.FC = () => {
         </div>
 
         {/* ── Editor + AI Panel ── */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div data-tour="cde-editor" className="flex-1 flex flex-col overflow-hidden">
           {/* Tab Bar */}
           <div className="h-8 bg-[#161b22] border-b border-[#21262d] flex items-center overflow-x-auto shrink-0">
             {tabs.map(tab => (

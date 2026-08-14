@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useOS } from '../../store';
 import { WindowState, COLORS } from '../../types';
-import { X, Minus, Square, Terminal, Monitor, FileCode, HardDrive, Cpu, Workflow, Package, Bot, Brain, FolderGit2, Activity, Settings } from 'lucide-react';
+import { X, Minus, Square, Terminal, Monitor, FileCode, HardDrive, Cpu, Workflow, Package, Bot, Brain, FolderGit2, Activity, Settings, HelpCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { FEATURE_TOURS } from '../../lib/featureTours';
 
 interface WindowProps {
   data: WindowState;
@@ -11,7 +12,8 @@ interface WindowProps {
 }
 
 export const Window: React.FC<WindowProps> = ({ data, children, liteMode }) => {
-  const { closeWindow, focusWindow, moveWindow, resizeWindow, minimizeWindow, maximizeWindow } = useOS();
+  const { closeWindow, focusWindow, moveWindow, resizeWindow, minimizeWindow, maximizeWindow, openFeatureTour } = useOS();
+  const hasTour = !!FEATURE_TOURS[data.appId];
   const [isDragging, setIsDragging] = useState(false);
   const [snapZone, setSnapZone] = useState<'left' | 'right' | 'top' | null>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
@@ -153,8 +155,19 @@ export const Window: React.FC<WindowProps> = ({ data, children, liteMode }) => {
               </span>
             </div>
 
-            {/* Placeholder to balance the flex layout */}
-            <div className="w-[60px]" />
+            {/* Balances the traffic-light cluster's width; also hosts the
+                per-app tour trigger when this app has one registered. */}
+            <div className="w-[60px] flex items-center justify-end">
+              {hasTour && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); openFeatureTour(data.appId); }}
+                  className="p-1 rounded hover:bg-white/10 text-gray-500 hover:text-purple-400 transition-colors"
+                  title="Feature tour"
+                >
+                  <HelpCircle size={13} />
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Content */}

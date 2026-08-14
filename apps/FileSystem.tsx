@@ -76,7 +76,7 @@ export const FileSystemApp: React.FC = () => {
   return (
     <div className="h-full bg-[#18181b] text-gray-200 flex flex-col">
       {/* Breadcrumb Toolbar */}
-      <div className="h-10 border-b border-white/5 flex items-center px-4 gap-1 text-sm bg-white/5 overflow-x-auto">
+      <div data-tour="fs-toolbar" className="h-10 border-b border-white/5 flex items-center px-4 gap-1 text-sm bg-white/5 overflow-x-auto">
         <button onClick={() => setPathStack(['home'])} className="p-1 hover:text-white text-gray-400 flex-shrink-0"><Home size={14} /></button>
         {pathStack.map((segment, i) => (
           <React.Fragment key={i}>
@@ -102,7 +102,7 @@ export const FileSystemApp: React.FC = () => {
       </div>
 
       {/* Grid */}
-      <div className="p-4 grid grid-cols-4 gap-4 overflow-y-auto flex-1">
+      <div data-tour="fs-grid" className="p-4 grid grid-cols-4 gap-4 overflow-y-auto flex-1">
         {pathStack.length > 1 && (
           <button
             onClick={navigateUp}
