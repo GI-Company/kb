@@ -5,6 +5,14 @@
 // VITE_ to client code, unlike api/*.ts's plain process.env.X (those run
 // server-side, where there's no such prefix requirement).
 //
+// Specifically NOT the NEXT_PUBLIC_ prefix — that's Next.js's convention,
+// not Vite's, and Vite silently ignores anything not prefixed VITE_ (no
+// error, no warning at the framework level — it just isn't in
+// import.meta.env). Confirmed live in production once: Vercel had
+// NEXT_PUBLIC_SUPABASE_URL/NEXT_PUBLIC_SUPABASE_ANON_KEY set correctly and
+// this app stayed in guest-only mode anyway, because those names never
+// reach import.meta.env in a Vite build.
+//
 // `supabase` is null when the env vars aren't configured — every caller
 // must handle that (falls back to the guest/localStorage path) rather than
 // assuming Supabase is always available, since it wasn't for most of this
