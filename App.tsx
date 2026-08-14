@@ -25,6 +25,7 @@ import { CinematicBoot } from './components/ui/CinematicBoot';
 import { ContextMenuProvider } from './components/ui/ContextMenu';
 import { kernel } from './services/kernel';
 import { AppUser, getSession, createGuestUser } from './lib/auth';
+import { identifyUser } from './lib/analytics';
 import { AnimatePresence } from 'framer-motion';
 
 type BootPhase = 'boot' | 'bios' | 'login' | 'desktop';
@@ -56,6 +57,10 @@ const App: React.FC = () => {
   }, [phase]);
 
   const enterDesktop = (u: AppUser) => {
+    // Guests stay anonymous by design (see lib/analytics.ts's
+    // person_profiles: 'identified_only') — only real accounts get tied
+    // to a persistent analytics identity.
+    if (!u.isGuest) identifyUser(u.id, { username: u.username });
     setUser(u);
     setPhase('desktop');
   };

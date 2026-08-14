@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { kernel } from '../services/kernel';
 import { Envelope } from '../types';
 import { getSession, signOut, AppUser } from '../lib/auth';
+import { resetAnalyticsIdentity } from '../lib/analytics';
 import { Settings, Save, Undo2, Palette, Type, Globe, Cpu, LogOut, UserCircle, Loader2 } from 'lucide-react';
 
 interface ConfigEntry {
@@ -33,6 +34,7 @@ export const SettingsApp: React.FC = () => {
   const handleSignOut = async () => {
     setSigningOut(true);
     await signOut();
+    resetAnalyticsIdentity();
     localStorage.removeItem('kernos_guest_user');
     // Simplest reliable way to reset every piece of in-memory app state
     // (App.tsx's boot phase, kernel bus, open windows) back to a clean

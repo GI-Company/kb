@@ -3,6 +3,7 @@ import { localModel, DEFAULT_LOCAL_MODEL_CONFIG, MixerType } from '../lib/localM
 import { runHistoryStore, genHistoryStore, RunHistoryEntry, GenHistoryEntry } from '../lib/localModelHistory';
 import { SavedModelMeta } from '../lib/modelRegistry';
 import { fetchGroqText } from '../lib/groqFetch';
+import { trackEvent } from '../lib/analytics';
 import { Cpu, Play, Sparkles, Download, RotateCcw, Loader2, Save, FolderOpen, Trash2, Wand2, Gauge } from 'lucide-react';
 
 const SAMPLE_CORPUS = `Once upon a time, there was a small robot named Kip. Kip lived in a workshop full of gears and wires.
@@ -114,6 +115,7 @@ export const LocalModelApp: React.FC = () => {
       });
       setLastLoss(result.finalLoss);
       log(`Finished ${result.steps} steps. Final loss: ${result.finalLoss.toFixed(4)}`, 'success');
+      trackEvent('local_model_trained', { mixer_type: mixerType, steps: result.steps, workers: numWorkers, final_loss: result.finalLoss });
       refreshHistory();
     } catch (err: any) {
       log(`ERROR: ${err?.message || err}`, 'error');
@@ -129,6 +131,7 @@ export const LocalModelApp: React.FC = () => {
       const result = await localModel.generate(prompt, maxTokens);
       setGenerated(result.text);
       log(`Generated ${result.tokensGenerated} tokens.`, 'success');
+      trackEvent('local_model_generated', { mixer_type: mixerType, tokens: result.tokensGenerated });
       refreshHistory();
     } catch (err: any) {
       log(`ERROR: ${err?.message || err}`, 'error');

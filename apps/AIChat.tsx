@@ -3,6 +3,7 @@ import { kernel } from '../services/kernel';
 import { Envelope } from '../types';
 import { extractToolCall, stripToolBlock, runLocalModelTool } from '../lib/localModelTools';
 import { getCurrentUserId } from '../lib/auth';
+import { trackEvent } from '../lib/analytics';
 import { Bot, Send, Loader2, ChevronDown, ChevronRight, Zap, ImagePlus, Brain, Plus, MessageSquare, Trash2, Clock } from 'lucide-react';
 
 interface ChatMessage {
@@ -322,6 +323,8 @@ export const AIChatApp: React.FC = () => {
         const msg = input.trim();
         if (!msg) return;
         if (!directMode && !selectedAgent) return;
+
+        trackEvent('chat_message_sent', { agent_id: directMode ? 'direct' : selectedAgent, has_image: !!imageBase64 });
 
         setMessages(prev => [...prev, {
             id: Math.random().toString(36),
