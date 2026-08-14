@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { kernel } from '../services/kernel';
+import { vfs } from '../lib/vfs';
 import { Envelope } from '../types';
 import {
   FolderOpen, File, ChevronRight, ChevronDown, Save, Sparkles,
@@ -12,11 +13,18 @@ import { motion, AnimatePresence } from 'framer-motion';
 //  CDE — Cognitive Development Environment
 //  A full IDE with file tree, tabbed editor, AI code review,
 //  and integrated terminal.
+//
+//  File tree + read/write go straight through lib/vfs.ts, same as
+//  FileSystem.tsx/Editor.tsx — not through the kernel bus. This used
+//  to load its tree via `vm.spawn find` and listen for a topic
+//  (vm.spawn:result) the Go backend never actually published, so it
+//  never worked even before this project's Vercel migration.
 // ═══════════════════════════════════════════════════════════════
 
 interface FileNode {
+  id: string;
   name: string;
-  path: string;
+  path: string; // display-only breadcrumb, e.g. "src/App.tsx" — not used for identity
   type: 'file' | 'directory';
   children?: FileNode[];
   expanded?: boolean;
@@ -24,6 +32,7 @@ interface FileNode {
 
 interface EditorTab {
   id: string;
+  fileId: string;
   name: string;
   path: string;
   content: string;
@@ -54,8 +63,9 @@ const FileTreeItem: React.FC<{
   depth: number;
   onSelect: (node: FileNode) => void;
   onToggle: (node: FileNode) => void;
-  onContextMenu?: (e: React.MouseEvent, node: FileNode) => void;
-}> = ({ node, depth, onSelect, onToggle, onContextMenu }) => {
+  onRename: (node: FileNode) => void;
+  onDelete: (node: FileNode) => void;
+}> = ({ node, depth, onSelect, onToggle, onRename, onDelete }) => {
   const isDir = node.type === 'directory';
   const indent = depth * 16;
   const { showMenu } = useContextMenu();
@@ -63,19 +73,13 @@ const FileTreeItem: React.FC<{
   const handleContext = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (onContextMenu) {
-      onContextMenu(e, node);
-      return;
-    }
-    
-    // Default context menu for file tree items
     showMenu(e, [
       { label: isDir ? 'Expand/Collapse' : 'Open File', icon: isDir ? <FolderOpen size={14}/> : <File size={14}/>, onClick: () => isDir ? onToggle(node) : onSelect(node) },
       { divider: true, onClick: () => {} },
-      { label: 'Rename', icon: <Edit2 size={14}/>, onClick: () => console.log('Rename', node.path) },
+      { label: 'Rename', icon: <Edit2 size={14}/>, onClick: () => onRename(node) },
       { label: 'Copy Path', icon: <Copy size={14}/>, onClick: () => navigator.clipboard.writeText(node.path) },
       { divider: true, onClick: () => {} },
-      { label: 'Delete', icon: <Trash2 size={14}/>, danger: true, onClick: () => console.log('Delete', node.path) }
+      { label: 'Delete', icon: <Trash2 size={14}/>, danger: true, onClick: () => onDelete(node) }
     ]);
   };
 
@@ -104,12 +108,13 @@ const FileTreeItem: React.FC<{
       </div>
       {isDir && node.expanded && node.children?.map(child => (
         <FileTreeItem
-          key={child.path}
+          key={child.id}
           node={child}
           depth={depth + 1}
           onSelect={onSelect}
           onToggle={onToggle}
-          onContextMenu={onContextMenu}
+          onRename={onRename}
+          onDelete={onDelete}
         />
       ))}
     </>
@@ -159,39 +164,61 @@ export const CDEApp: React.FC = () => {
     loadFileTree();
   }, []);
 
-  const loadFileTree = () => {
-    setTreeLoading(true);
-    kernel.publish('vm.spawn', {
-      _request_id: 'cde-tree',
-      cmd: 'find',
-      args: ['.', '-maxdepth', '3', '-not', '-path', '*/node_modules/*', '-not', '-path', '*/.git/*', '-not', '-path', '*/dist/*']
+  /** Recursively walks lib/vfs.ts starting at `parentId`, building the nested tree the Explorer panel renders. */
+  const buildTreeFromVfs = (parentId: string, parentPath = ''): FileNode[] => {
+    const children = vfs.list(parentId);
+    const sorted = children.slice().sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    return sorted.map(c => {
+      const path = parentPath ? `${parentPath}/${c.name}` : c.name;
+      return {
+        id: c.id,
+        name: c.name,
+        path,
+        type: c.type,
+        children: c.type === 'directory' ? buildTreeFromVfs(c.id, path) : undefined,
+        expanded: false,
+      };
     });
   };
 
-  // ── Subscribe to kernel events ──
+  const loadFileTree = () => {
+    setTreeLoading(true);
+    setFileTree(buildTreeFromVfs('home'));
+    setTreeLoading(false);
+  };
+
+  const handleCreateFile = () => {
+    const name = prompt('New file name:');
+    if (name) { vfs.create('home', name, 'file'); loadFileTree(); }
+  };
+
+  const handleCreateFolder = () => {
+    const name = prompt('New folder name:');
+    if (name) { vfs.create('home', name, 'directory'); loadFileTree(); }
+  };
+
+  const handleRenameNode = (node: FileNode) => {
+    const newName = prompt(`Rename ${node.name} to:`, node.name);
+    if (newName && newName !== node.name) {
+      vfs.rename(node.id, newName);
+      loadFileTree();
+    }
+  };
+
+  const handleDeleteNode = (node: FileNode) => {
+    if (!confirm(`Delete ${node.name}?`)) return;
+    vfs.remove(node.id);
+    setTabs(prev => prev.filter(t => t.fileId !== node.id));
+    loadFileTree();
+  };
+
+  // ── Subscribe to kernel events (AI review + integrated terminal only —
+  // file tree and read/write go straight through lib/vfs.ts above) ──
   useEffect(() => {
     const unsub = kernel.subscribe((env: Envelope) => {
-      // File tree response
-      if (env.topic === 'vm.spawn:result' && (env.payload as any)?._request_id === 'cde-tree') {
-        const output = (env.payload as any)?.output || '';
-        const paths = output.split('\n').filter((p: string) => p.trim() && p !== '.');
-        const tree = buildFileTree(paths);
-        setFileTree(tree);
-        setTreeLoading(false);
-      }
-
-      // File read response
-      if (env.topic === 'vfs:read:resp') {
-        const { id, content } = env.payload as any;
-        setTabs(prev => prev.map(t => t.path === id ? { ...t, content: content || '' } : t));
-      }
-
-      // File save ack
-      if (env.topic === 'vfs:write:ack') {
-        const { id } = env.payload as any;
-        setTabs(prev => prev.map(t => t.path === id ? { ...t, isDirty: false } : t));
-      }
-
       // AI streaming from agent-coder
       if (env.topic === 'agent.chat:stream' && env.from === 'agent-coder') {
         setAiStatus('streaming');
@@ -202,16 +229,15 @@ export const CDEApp: React.FC = () => {
         setAiStatus('idle');
       }
 
-      // Terminal output
-      if (env.topic === 'vm.spawn:result') {
+      // Integrated terminal output — same vm.stdout/vm.stderr topics
+      // Terminal.tsx listens for, matched by our "cde-term-" request prefix.
+      if (env.topic === 'vm.stdout' || env.topic === 'vm.stderr') {
         const reqId = (env.payload as any)?._request_id || '';
         if (reqId.startsWith('cde-term-')) {
-          const output = (env.payload as any)?.output || '';
-          const error = (env.payload as any)?.error;
+          const text = (env.payload as any)?.text || '';
           setTerminalOutput(prev => [
             ...prev,
-            ...(output ? output.split('\n') : []),
-            ...(error ? [`❌ ${error}`] : [])
+            ...(env.topic === 'vm.stderr' ? text.split('\n').map((l: string) => `❌ ${l}`) : text.split('\n')),
           ]);
         }
       }
@@ -224,95 +250,34 @@ export const CDEApp: React.FC = () => {
     terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [terminalOutput]);
 
-  // ── Build file tree from flat path list ──
-  const buildFileTree = (paths: string[]): FileNode[] => {
-    const root: Record<string, FileNode> = {};
-
-    for (const p of paths) {
-      const clean = p.replace(/^\.\//, '');
-      if (!clean) continue;
-
-      const parts = clean.split('/');
-      let current = root;
-
-      for (let i = 0; i < parts.length; i++) {
-        const name = parts[i];
-        const fullPath = parts.slice(0, i + 1).join('/');
-        const isLast = i === parts.length - 1;
-
-        if (!current[fullPath]) {
-          current[fullPath] = {
-            name,
-            path: fullPath,
-            type: isLast && name.includes('.') ? 'file' : 'directory',
-            children: [],
-            expanded: false,
-          };
-        }
-
-        if (i > 0) {
-          const parentPath = parts.slice(0, i).join('/');
-          const parent = current[parentPath];
-          if (parent && !parent.children?.find(c => c.path === fullPath)) {
-            parent.children?.push(current[fullPath]);
-          }
-        }
-      }
-    }
-
-    // Return only top-level nodes
-    const topLevel: FileNode[] = [];
-    for (const [path, node] of Object.entries(root)) {
-      if (!path.includes('/')) {
-        topLevel.push(node);
-      }
-    }
-
-    // Sort: directories first, then alphabetically
-    const sortNodes = (nodes: FileNode[]): FileNode[] => {
-      return nodes.sort((a, b) => {
-        if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      }).map(n => ({
-        ...n,
-        children: n.children ? sortNodes(n.children) : undefined,
-      }));
-    };
-
-    return sortNodes(topLevel);
-  };
-
   // ── File tree actions ──
   const handleFileSelect = (node: FileNode) => {
     if (node.type !== 'file') return;
 
     // Check if tab already exists
-    const existing = tabs.find(t => t.path === node.path);
+    const existing = tabs.find(t => t.fileId === node.id);
     if (existing) {
       setActiveTabId(existing.id);
       return;
     }
 
-    // Open new tab and load content
     const newTab: EditorTab = {
       id: Math.random().toString(36).substring(7),
+      fileId: node.id,
       name: node.name,
       path: node.path,
-      content: '// Loading...',
+      content: vfs.read(node.id),
       isDirty: false,
       language: detectLanguage(node.name),
     };
 
     setTabs(prev => [...prev, newTab]);
     setActiveTabId(newTab.id);
-
-    // Request file content
-    kernel.publish('vfs:read', { _request_id: newTab.id, id: node.path });
   };
 
   const handleToggleDir = (node: FileNode) => {
     const toggleTree = (nodes: FileNode[]): FileNode[] => {
-      return nodes.map(n => n.path === node.path
+      return nodes.map(n => n.id === node.id
         ? { ...n, expanded: !n.expanded }
         : { ...n, children: n.children ? toggleTree(n.children) : undefined }
       );
@@ -331,7 +296,8 @@ export const CDEApp: React.FC = () => {
 
   const handleSave = useCallback(() => {
     if (!activeTab) return;
-    kernel.publish('vfs:write', { id: activeTab.path, content: activeTab.content });
+    vfs.write(activeTab.fileId, activeTab.content);
+    setTabs(prev => prev.map(t => t.id === activeTab.id ? { ...t, isDirty: false } : t));
   }, [activeTab]);
 
   // Keyboard shortcuts
@@ -492,10 +458,10 @@ export const CDEApp: React.FC = () => {
               <button onClick={loadFileTree} className="p-1.5 rounded-md hover:bg-white/10 text-gray-500 hover:text-white transition-colors" title="Refresh">
                 <RefreshCw size={12} />
               </button>
-              <button className="p-1.5 rounded-md hover:bg-white/10 text-gray-500 hover:text-white transition-colors" title="New File">
+              <button onClick={handleCreateFile} className="p-1.5 rounded-md hover:bg-white/10 text-gray-500 hover:text-white transition-colors" title="New File">
                 <FilePlus size={12} />
               </button>
-              <button className="p-1.5 rounded-md hover:bg-white/10 text-gray-500 hover:text-white transition-colors" title="New Folder">
+              <button onClick={handleCreateFolder} className="p-1.5 rounded-md hover:bg-white/10 text-gray-500 hover:text-white transition-colors" title="New Folder">
                 <FolderPlus size={12} />
               </button>
             </div>
@@ -507,13 +473,19 @@ export const CDEApp: React.FC = () => {
                 Scanning VFS...
               </div>
             ) : (
-              fileTree.map(node => (
+              fileTree.length === 0 ? (
+                <div className="px-4 py-3 text-gray-600 text-xs font-mono">
+                  Empty. Use the file/folder icons above to create something.
+                </div>
+              ) : fileTree.map(node => (
                 <FileTreeItem
-                  key={node.path}
+                  key={node.id}
                   node={node}
                   depth={0}
                   onSelect={handleFileSelect}
                   onToggle={handleToggleDir}
+                  onRename={handleRenameNode}
+                  onDelete={handleDeleteNode}
                 />
               ))
             )}
