@@ -4,7 +4,8 @@ import { useOS } from '../store';
 import { Envelope } from '../types';
 import { getSession, signOut, AppUser } from '../lib/auth';
 import { resetAnalyticsIdentity } from '../lib/analytics';
-import { Settings, Save, Undo2, Palette, Type, Globe, Cpu, LogOut, UserCircle, Loader2, Zap, Compass } from 'lucide-react';
+import { DONATE_URL, isDonateConfigured } from '../lib/donate';
+import { Settings, Save, Undo2, Palette, Type, Globe, Cpu, LogOut, UserCircle, Loader2, Zap, Compass, Heart, ExternalLink } from 'lucide-react';
 
 interface ConfigEntry {
   key: string;
@@ -176,6 +177,34 @@ export const SettingsApp: React.FC = () => {
             Take the Tour
           </button>
         </div>
+      </div>
+
+      <div className="mb-6 p-4 rounded-lg bg-white/5 border border-white/5">
+        <div className="flex items-center gap-2 mb-3">
+          <Heart size={14} className="text-pink-400" />
+          <span className="text-xs font-mono text-gray-400 uppercase tracking-wider">Support Kernos</span>
+        </div>
+        <p className="text-[11px] text-gray-500 leading-relaxed mb-3">
+          Kernos is an independently-funded project — Groq API calls, Supabase, and Vercel hosting all cost real money to run.
+          Some capabilities are gated by hosting tier rather than code: the terminal's <span className="font-mono text-gray-400">render</span> command
+          (real headless-browser page loads) needs a paid Vercel plan to get enough compute budget — Hobby's hard 10-second
+          function limit isn't enough for a Chromium cold start plus a page load, no matter how it's configured. Donations go
+          straight toward removing constraints like that for everyone using this.
+        </p>
+        {isDonateConfigured ? (
+          <a
+            href={DONATE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-pink-500/10 border border-pink-500/20 text-pink-400 text-xs font-medium hover:bg-pink-500/20 transition-colors"
+          >
+            <Heart size={12} />
+            Support This Project
+            <ExternalLink size={11} className="opacity-60" />
+          </a>
+        ) : (
+          <div className="text-[10px] text-gray-600 italic">Donations aren't set up yet.</div>
+        )}
       </div>
 
       <div className="space-y-3">
