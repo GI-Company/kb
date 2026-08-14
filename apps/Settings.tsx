@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { kernel } from '../services/kernel';
 import { Envelope } from '../types';
-import { Settings, Save, Undo2, Palette, Type, Globe, Cpu } from 'lucide-react';
+import { getSession, signOut, AppUser } from '../lib/auth';
+import { Settings, Save, Undo2, Palette, Type, Globe, Cpu, LogOut, UserCircle, Loader2 } from 'lucide-react';
 
 interface ConfigEntry {
   key: string;
@@ -22,6 +23,22 @@ export const SettingsApp: React.FC = () => {
   const [editKey, setEditKey] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
   const [saving, setSaving] = useState(false);
+  const [sessionUser, setSessionUser] = useState<AppUser | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
+
+  useEffect(() => {
+    getSession().then(setSessionUser);
+  }, []);
+
+  const handleSignOut = async () => {
+    setSigningOut(true);
+    await signOut();
+    localStorage.removeItem('kernos_guest_user');
+    // Simplest reliable way to reset every piece of in-memory app state
+    // (App.tsx's boot phase, kernel bus, open windows) back to a clean
+    // logged-out boot rather than trying to unwind it all by hand.
+    window.location.reload();
+  };
 
   // Fetch current values on mount
   useEffect(() => {
@@ -68,6 +85,33 @@ export const SettingsApp: React.FC = () => {
       <div className="flex items-center gap-2 mb-6">
         <Settings className="text-gray-400" size={18} />
         <h2 className="text-sm font-bold uppercase tracking-widest text-gray-300">System Preferences</h2>
+      </div>
+
+      <div className="mb-6 p-4 rounded-lg bg-white/5 border border-white/5">
+        <div className="flex items-center gap-2 mb-3">
+          <UserCircle size={14} className="text-cyan-400" />
+          <span className="text-xs font-mono text-gray-400 uppercase tracking-wider">Account</span>
+        </div>
+        {sessionUser ? (
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm text-white">{sessionUser.username}</div>
+              <div className="text-[11px] text-gray-500">Signed in</div>
+            </div>
+            <button
+              onClick={handleSignOut}
+              disabled={signingOut}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-red-500/10 border border-red-500/20 text-red-400 text-xs font-medium hover:bg-red-500/20 disabled:opacity-40 transition-colors"
+            >
+              {signingOut ? <Loader2 size={12} className="animate-spin" /> : <LogOut size={12} />}
+              Sign Out
+            </button>
+          </div>
+        ) : (
+          <div className="text-xs text-gray-500">
+            Using a guest identity (chat history stays on this browser only). Reload and sign in from the login screen for an account that syncs across devices.
+          </div>
+        )}
       </div>
 
       <div className="space-y-3">

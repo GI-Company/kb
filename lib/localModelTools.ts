@@ -47,5 +47,17 @@ export async function runLocalModelTool(toolCall: ToolCall): Promise<string> {
     return `Local model output:\n\n${text}`;
   }
 
+  if (toolCall.tool === 'bnlm.score') {
+    const { text = '' } = toolCall.args || {};
+    if (!localModel.isReady) throw new Error('No local model has been trained yet in this tab — train one first.');
+    if (!text || typeof text !== 'string') throw new Error('Tool call is missing "text" to score.');
+    const result = await localModel.score(text);
+    return (
+      `Score for that text against the trained model: loss ${result.loss.toFixed(3)}, ` +
+      `perplexity ${result.perplexity.toFixed(2)} (lower = closer to what it learned), ` +
+      `over ${result.tokensScored} tokens.`
+    );
+  }
+
   throw new Error(`Unknown local model tool: "${toolCall.tool}"`);
 }

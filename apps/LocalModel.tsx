@@ -3,7 +3,7 @@ import { localModel, DEFAULT_LOCAL_MODEL_CONFIG, MixerType } from '../lib/localM
 import { runHistoryStore, genHistoryStore, RunHistoryEntry, GenHistoryEntry } from '../lib/localModelHistory';
 import { SavedModelMeta } from '../lib/modelRegistry';
 import { fetchGroqText } from '../lib/groqFetch';
-import { Cpu, Play, Sparkles, Download, RotateCcw, Loader2, Save, FolderOpen, Trash2, Wand2 } from 'lucide-react';
+import { Cpu, Play, Sparkles, Download, RotateCcw, Loader2, Save, FolderOpen, Trash2, Wand2, Gauge } from 'lucide-react';
 
 const SAMPLE_CORPUS = `Once upon a time, there was a small robot named Kip. Kip lived in a workshop full of gears and wires.
 
@@ -43,6 +43,9 @@ export const LocalModelApp: React.FC = () => {
   const [lastLoss, setLastLoss] = useState<number | null>(null);
   const [lossHistory, setLossHistory] = useState<number[]>([]);
   const [generated, setGenerated] = useState('');
+  const [scoreText, setScoreText] = useState('');
+  const [scoreResult, setScoreResult] = useState<{ loss: number; perplexity: number; tokensScored: number } | null>(null);
+  const [isScoring, setIsScoring] = useState(false);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -131,6 +134,21 @@ export const LocalModelApp: React.FC = () => {
       log(`ERROR: ${err?.message || err}`, 'error');
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const handleScore = async () => {
+    if (!isReady) { log('Initialize the model first.', 'error'); return; }
+    if (!scoreText.trim()) { log('Enter some text to score.', 'error'); return; }
+    setIsScoring(true);
+    try {
+      const result = await localModel.score(scoreText);
+      setScoreResult(result);
+      log(`Scored ${result.tokensScored} tokens: loss ${result.loss.toFixed(3)}, perplexity ${result.perplexity.toFixed(2)}.`, 'success');
+    } catch (err: any) {
+      log(`ERROR: ${err?.message || err}`, 'error');
+    } finally {
+      setIsScoring(false);
     }
   };
 
@@ -392,6 +410,31 @@ export const LocalModelApp: React.FC = () => {
             <div className="text-xs text-gray-300 whitespace-pre-wrap font-mono leading-relaxed max-h-32 overflow-y-auto">{generated}</div>
           </div>
         )}
+
+        {/* Score: the "more than generation" use of a trained model — how
+            well does this text match what it learned, without sampling anything new. */}
+        <div className="p-3 border-b border-white/5 flex items-center gap-2 flex-wrap">
+          <input
+            type="text"
+            value={scoreText}
+            onChange={e => setScoreText(e.target.value)}
+            placeholder="Score text against the trained model..."
+            className="flex-1 min-w-[160px] bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-600 outline-none focus:border-purple-500/50"
+          />
+          <button
+            onClick={handleScore}
+            disabled={!isReady || isScoring}
+            className="flex items-center gap-1.5 px-3 py-2 bg-white/5 border border-white/10 hover:bg-white/10 disabled:opacity-40 rounded-lg text-xs text-gray-300 transition-colors"
+          >
+            {isScoring ? <Loader2 size={12} className="animate-spin" /> : <Gauge size={12} />}
+            Score
+          </button>
+          {scoreResult && (
+            <span className="text-[10px] text-gray-500 font-mono">
+              loss {scoreResult.loss.toFixed(3)} · perplexity {scoreResult.perplexity.toFixed(2)} · {scoreResult.tokensScored} tokens
+            </span>
+          )}
+        </div>
 
         {/* Bottom tabs: Log / Run History / Generation Log */}
         <div className="px-3 pt-2 flex items-center gap-1 border-b border-white/5">

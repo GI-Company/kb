@@ -18,20 +18,22 @@ import { ToastSystem } from './components/ui/ToastSystem';
 import { SystemMetricsApp } from './apps/SystemMetrics';
 import { SettingsApp } from './apps/Settings';
 import { BIOSSetup } from './components/BIOSSetup';
+import { LoginScreen } from './components/LoginScreen';
 import { MultiAgentWorkspace } from './apps/MultiAgentWorkspace';
 import { TimelineSlider } from './apps/TimelineSlider';
 import { CinematicBoot } from './components/ui/CinematicBoot';
 import { ContextMenuProvider } from './components/ui/ContextMenu';
 import { kernel } from './services/kernel';
+import { AppUser, getSession, createGuestUser } from './lib/auth';
 import { AnimatePresence } from 'framer-motion';
 
-type BootPhase = 'boot' | 'bios' | 'desktop';
+type BootPhase = 'boot' | 'bios' | 'login' | 'desktop';
 
 const App: React.FC = () => {
   const { windows } = useOS();
   const [phase, setPhase] = useState<BootPhase>('boot');
   const [bootLines, setBootLines] = useState<string[]>([]);
-  const [user, setUser] = useState<{ username: string; avatar_url: string; role: string } | null>(null);
+  const [user, setUser] = useState<AppUser | null>(null);
   const [biosRequested, setBiosRequested] = useState(false);
 
   // Listen for right-click during boot to enter BIOS
@@ -53,22 +55,32 @@ const App: React.FC = () => {
     };
   }, [phase]);
 
-  // v1 is single-user, no account system (see plan) — the old login/signup
-  // screen depended on the Go backend's user DB, which no longer exists.
-  // Boot straight into a persistent local "guest" identity instead.
-  const enterDesktop = () => {
-    let session = localStorage.getItem('kernos_guest_user');
-    if (!session) {
-      const guestId = Math.random().toString(36).substring(2, 6);
-      session = JSON.stringify({
-        username: `Guest_${guestId}`,
-        avatar_url: `https://api.dicebear.com/7.x/identicon/svg?seed=${guestId}`,
-        role: 'guest',
-      });
-      localStorage.setItem('kernos_guest_user', session);
-    }
-    setUser(JSON.parse(session));
+  const enterDesktop = (u: AppUser) => {
+    setUser(u);
     setPhase('desktop');
+  };
+
+  // Real Supabase session takes priority; otherwise a previously-chosen
+  // local guest identity; otherwise show the login screen (which itself
+  // offers a no-friction "Continue as Guest" escape hatch).
+  const resolveSessionAndEnter = async () => {
+    const sessionUser = await getSession();
+    if (sessionUser) {
+      enterDesktop(sessionUser);
+      return;
+    }
+
+    const savedGuest = localStorage.getItem('kernos_guest_user');
+    if (savedGuest) {
+      try {
+        enterDesktop(JSON.parse(savedGuest));
+        return;
+      } catch {
+        // Corrupt saved session — fall through to login.
+      }
+    }
+
+    setPhase('login');
   };
 
   const handleBootComplete = () => {
@@ -76,7 +88,17 @@ const App: React.FC = () => {
       setPhase('bios');
       return;
     }
-    enterDesktop();
+    resolveSessionAndEnter();
+  };
+
+  const handleLogin = (loggedInUser: AppUser) => {
+    enterDesktop(loggedInUser);
+  };
+
+  const handleGuestAccess = () => {
+    const guest = createGuestUser();
+    localStorage.setItem('kernos_guest_user', JSON.stringify(guest));
+    enterDesktop(guest);
   };
 
   const getAppContent = (appId: string, data?: any) => {
@@ -110,7 +132,12 @@ const App: React.FC = () => {
 
   // ─── BIOS SETUP ───
   if (phase === 'bios') {
-    return <BIOSSetup onExit={() => { setBiosRequested(false); enterDesktop(); }} />;
+    return <BIOSSetup onExit={() => { setBiosRequested(false); resolveSessionAndEnter(); }} />;
+  }
+
+  // ─── LOGIN SCREEN ───
+  if (phase === 'login') {
+    return <LoginScreen onLogin={handleLogin} onGuestAccess={handleGuestAccess} />;
   }
 
   // ─── DESKTOP ───

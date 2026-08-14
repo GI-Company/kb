@@ -76,7 +76,7 @@ class Kernel {
     if (env.topic === 'vm.spawn') return void this.handleExec(env);
     if (env.topic === 'terminal.check_shadow') return this.handleShadowCheck(env);
     if (env.topic === 'sys.terminal.intent') return void this.handleTerminalIntent(env);
-    if (env.topic.startsWith('chat.')) return this.handleChatHistory(env);
+    if (env.topic.startsWith('chat.')) return void this.handleChatHistory(env);
     if (env.topic === 'applet.compile') return this.handleAppletCompile(env);
     if (env.topic === 'task.run') return void this.handleTaskRun(env);
 
@@ -282,32 +282,34 @@ class Kernel {
     }, 0);
   }
 
-  private handleChatHistory(env: Envelope) {
+  private async handleChatHistory(env: Envelope) {
     const payload = env.payload as any;
-    setTimeout(() => {
+    try {
       switch (env.topic) {
         case 'chat.list': {
-          const conversations = chatStore.list(payload.user_id);
+          const conversations = await chatStore.list(payload.user_id);
           this.broadcast({ topic: 'chat.list:resp', from: 'kernel', payload: { conversations }, time: now() });
           break;
         }
         case 'chat.save': {
-          chatStore.save(payload);
+          await chatStore.save(payload);
           this.broadcast({ topic: 'chat.save:resp', from: 'kernel', payload: { id: payload.id }, time: now() });
           break;
         }
         case 'chat.load': {
-          const conv = chatStore.load(payload.id);
+          const conv = await chatStore.load(payload.id, payload.user_id);
           this.broadcast({ topic: 'chat.load:resp', from: 'kernel', payload: conv || {}, time: now() });
           break;
         }
         case 'chat.delete': {
-          chatStore.delete(payload.id);
+          await chatStore.delete(payload.id, payload.user_id);
           this.broadcast({ topic: 'chat.delete:resp', from: 'kernel', payload: { id: payload.id }, time: now() });
           break;
         }
       }
-    }, 0);
+    } catch (err: any) {
+      this.broadcast({ topic: 'sys.notify:toast', from: 'kernel', payload: { message: `Chat history error: ${err?.message || err}` }, time: now() });
+    }
   }
 }
 

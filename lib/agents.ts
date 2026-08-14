@@ -1,15 +1,49 @@
 // Agent personas — ported from the original Go backend's server/agents.yaml.
 // Consumed by both services/kernel.ts (to answer `agent.roster` locally,
 // with no network round trip) and api/chat.ts (to build the system prompt
-// sent to Groq). Previously each persona ran against a locally-hosted
-// LM Studio model; now they're all just different system prompts aimed at
-// the same Groq-hosted model (GROQ_MODEL env var), so `model` here is
-// display-only.
+// AND pick which Groq model to call).
+//
+// Each persona is routed to a specific Groq model matched to its job and
+// call frequency, not one model for everything — picked from the actual
+// available-models/rate-limit table (RPM are all 30 on this account; the
+// real differentiator is RPD/TPM/TPD):
+//
+//   Model                          RPD     TPM    TPD
+//   allam-2-7b                     7K      6K     500K       (highest daily budget of any general chat model here)
+//   groq/compound                  250     70K    no limit   (agentic, built-in tools — reserved, not default-routed)
+//   groq/compound-mini             250     70K    no limit   (same, smaller)
+//   llama-3.3-70b-versatile        1K      12K    100K       (general-purpose, more capable)
+//   meta-llama/llama-prompt-guard-2-22m/86m  14.4K  15K  500K (jailbreak/injection classifiers, not chat models — not used as a persona backend)
+//   openai/gpt-oss-120b            1K      8K     200K       (most capable of the bunch)
+//   openai/gpt-oss-20b             1K      8K     200K       (faster, less capable)
+//   openai/gpt-oss-safeguard-20b   1K      8K     200K       (safety/moderation-tuned)
+//   qwen/qwen3.6-27b               1K      8K     200K       (solid general mid-size)
+//
+// llama-3.1-8b-instant deliberately excluded — flagged as being
+// deprecated soon, not worth routing anything to even as a fallback.
+//
+// Dispatcher fires on nearly every user action (chat, terminal NL
+// translation, DAG goal planning) so it gets the model with by far the
+// largest daily budget (allam-2-7b) rather than the most "capable" one —
+// throughput matters more than depth for fast triage. Architect/Code
+// Review get the most capable model (gpt-oss-120b) since they're invoked
+// less often (secondary review, not primary chat) and benefit most from
+// stronger reasoning. Security Auditor gets the safety-tuned model
+// (gpt-oss-safeguard-20b) as a direct fit for its job. `fallbackModel` is
+// tried once if the primary gets rate-limited (see api/chat.ts) —
+// spreading load across models instead of failing outright is the actual
+// "use all of them depending on task load" behavior.
+//
+// Caveat: none of these models are confirmed vision-capable on Groq. Code
+// Review's system prompt still mentions screenshot analysis (kept from the
+// original design) but an image attachment may simply be ignored or error
+// depending on the model — not something to silently paper over.
 
 export interface AgentPersona {
   id: string;
   displayName: string;
   model: string;
+  fallbackModel?: string;
   systemPrompt: string;
 }
 
@@ -32,6 +66,14 @@ or
 {"tool":"bnlm.generate","args":{"prompt":"...","maxTokens":60}}
 \`\`\`
 
+or, to check how well a piece of text matches what the local model has
+learned (lower perplexity = closer to its training text — useful for
+ranking candidates or spotting outliers, not just generating new text):
+
+\`\`\`tool
+{"tool":"bnlm.score","args":{"text":"..."}}
+\`\`\`
+
 Only emit a tool block when the user actually wants a local model action —
 for everything else, respond normally. You may include normal conversational
 text before or after the tool block explaining what you're about to do; the
@@ -41,7 +83,8 @@ export const DEFAULT_AGENTS: AgentPersona[] = [
   {
     id: 'agent-dispatcher',
     displayName: 'Dispatcher',
-    model: 'groq',
+    model: 'allam-2-7b',
+    fallbackModel: 'qwen/qwen3.6-27b',
     systemPrompt: `You are the Dispatcher agent inside Kernos, a browser-native AI workspace.
 Your role is to quickly triage user requests into actionable task DAGs.
 When asked to perform an OS operation or automate a multi-step workflow, respond with ONLY a JSON array of TaskNode objects — no prose, no markdown fences.
@@ -54,7 +97,8 @@ ${BNLM_TOOL_CONTRACT}`,
   {
     id: 'agent-architect',
     displayName: 'Architect',
-    model: 'groq',
+    model: 'openai/gpt-oss-120b',
+    fallbackModel: 'llama-3.3-70b-versatile',
     systemPrompt: `You are the Architect agent inside Kernos, a browser-native AI workspace.
 Your role is to deeply review DAGs, plans, and code for safety, correctness, and optimization.
 When reviewing a DAG, check for:
@@ -68,7 +112,8 @@ For general questions, think deeply before answering.`,
   {
     id: 'agent-chat',
     displayName: 'Kernos Assistant',
-    model: 'groq',
+    model: 'llama-3.3-70b-versatile',
+    fallbackModel: 'qwen/qwen3.6-27b',
     systemPrompt: `You are the Kernos Assistant, the primary conversational AI for Kernos users.
 You are a highly intelligent, empathetic, and helpful digital companion.
 CRITICAL INSTRUCTION: You must NEVER output raw JSON Task Nodes or DAGs (that's the Dispatcher's job).
@@ -80,7 +125,8 @@ ${BNLM_TOOL_CONTRACT}`,
   {
     id: 'agent-devops',
     displayName: 'DevOps Engineer',
-    model: 'groq',
+    model: 'qwen/qwen3.6-27b',
+    fallbackModel: 'llama-3.3-70b-versatile',
     systemPrompt: `You are the DevOps Engineer agent inside Kernos.
 You specialize in infrastructure, deployment, CI/CD pipelines, and system administration.
 When asked about builds, deployments, or infrastructure:
@@ -96,7 +142,8 @@ For conversational questions about DevOps, respond with practical, battle-tested
   {
     id: 'agent-security',
     displayName: 'Security Auditor',
-    model: 'groq',
+    model: 'openai/gpt-oss-safeguard-20b',
+    fallbackModel: 'openai/gpt-oss-120b',
     systemPrompt: `You are the Security Auditor agent inside Kernos.
 You specialize in code security review, vulnerability detection, and threat modeling.
 When reviewing code or configurations:
@@ -112,7 +159,8 @@ When asked general security questions, provide defense-in-depth recommendations.
   {
     id: 'agent-coder',
     displayName: 'Code Review',
-    model: 'groq',
+    model: 'openai/gpt-oss-120b',
+    fallbackModel: 'qwen/qwen3.6-27b',
     systemPrompt: `You are the Code Review agent inside Kernos.
 You specialize in reviewing code for correctness, readability, performance, and best practices.
 When reviewing code:

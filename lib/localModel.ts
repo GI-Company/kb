@@ -20,6 +20,8 @@ import { splitDocuments, tokenizeDocuments, sampleDocBatch } from '../src/bnlm/d
 import { quantizeModel, serializeQuantized } from '../src/bnlm/quantize.js';
 // @ts-ignore - plain JS module, no type declarations
 import { TrainingWorkerPool } from '../src/bnlm/worker_pool.js';
+// @ts-ignore - plain JS module, no type declarations
+import { crossEntropyLoss } from '../src/bnlm/tensor.js';
 import { runHistoryStore, genHistoryStore } from './localModelHistory';
 import { modelRegistry, SavedModelMeta } from './modelRegistry';
 
@@ -64,6 +66,12 @@ export interface TrainResult {
 export interface GenerateResult {
   text: string;
   tokensGenerated: number;
+}
+
+export interface ScoreResult {
+  loss: number;
+  perplexity: number;
+  tokensScored: number;
 }
 
 class LocalModelService {
@@ -228,6 +236,36 @@ class LocalModelService {
     });
 
     return { text, tokensGenerated: generatedIds.length };
+  }
+
+  /**
+   * Scores text against the trained model instead of generating from it —
+   * how surprised is the model by this text, on the same next-token-
+   * prediction objective it was trained on? Lower loss/perplexity means
+   * the text looks more like what it learned. Useful for ranking
+   * candidates, spotting outliers, or a lightweight style-match check —
+   * the "more than just creating new text" use of a trained local model,
+   * built from the same forward pass + cross-entropy loss training
+   * already uses, just without the backward/optimizer step.
+   */
+  async score(text: string): Promise<ScoreResult> {
+    if (!this.model || !this.tokenizer) {
+      throw new Error('Local model not initialized — train one first.');
+    }
+    const safeText = this.filterToVocab(text);
+    if (safeText.length < 2) {
+      throw new Error('Not enough recognizable text to score (needs at least 2 characters from the trained vocabulary).');
+    }
+    const ids: Int32Array = this.tokenizer.encode(safeText);
+    const T = Math.min(ids.length - 1, this.config.contextLen);
+    if (T < 1) {
+      throw new Error('Text too short to score.');
+    }
+    const input = Int32Array.from(ids.slice(0, T));
+    const target = Int32Array.from(ids.slice(1, T + 1));
+    const logits = await this.model.forward(input, 1, T);
+    const { value } = crossEntropyLoss(logits, target);
+    return { loss: value, perplexity: Math.exp(value), tokensScored: T };
   }
 
   exportInt8(): { blob: Blob; filename: string } {

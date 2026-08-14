@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { kernel } from '../services/kernel';
 import { Envelope } from '../types';
 import { extractToolCall, stripToolBlock, runLocalModelTool } from '../lib/localModelTools';
+import { getCurrentUserId } from '../lib/auth';
 import { Bot, Send, Loader2, ChevronDown, ChevronRight, Zap, ImagePlus, Brain, Plus, MessageSquare, Trash2, Clock } from 'lucide-react';
 
 interface ChatMessage {
@@ -91,10 +92,14 @@ export const AIChatApp: React.FC = () => {
     const [conversationId, setConversationId] = useState<string>(() => `chat-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`);
     const [conversations, setConversations] = useState<ConversationMeta[]>([]);
     const [showHistory, setShowHistory] = useState(false);
-    const [userId] = useState(() => {
-        try { return JSON.parse(localStorage.getItem('kernos_user') || '{}')?.username || 'guest'; }
-        catch { return 'guest'; }
-    });
+    // Resolved async (real Supabase session vs. saved guest id vs. last-resort
+    // 'guest') — starts as 'guest' so the very first chat.list still fires
+    // something, then re-fires once the real id resolves (see the effect
+    // below and its [userId] dependency on chat.list's own effect).
+    const [userId, setUserId] = useState('guest');
+    useEffect(() => {
+        getCurrentUserId().then(setUserId);
+    }, []);
 
     useEffect(() => {
         bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -291,13 +296,13 @@ export const AIChatApp: React.FC = () => {
 
     // ── Load conversation ──
     const loadConversation = (id: string) => {
-        kernel.publish('chat.load', { id });
+        kernel.publish('chat.load', { id, user_id: userId });
     };
 
     // ── Delete conversation ──
     const deleteConversation = (id: string, e: React.MouseEvent) => {
         e.stopPropagation();
-        kernel.publish('chat.delete', { id });
+        kernel.publish('chat.delete', { id, user_id: userId });
         if (id === conversationId) startNewChat();
     };
 

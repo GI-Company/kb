@@ -74,25 +74,46 @@ export default async function handler(req: Request): Promise<Response> {
     messages.push({ role: 'user', content: message });
   }
 
-  const model = process.env.GROQ_MODEL || DEFAULT_MODEL;
+  // process.env.GROQ_MODEL, when set, is a global override (forces every
+  // persona to one model — useful for testing/debugging a specific model).
+  // Otherwise each persona routes to the model picked for its job (see
+  // lib/agents.ts's routing rationale).
+  const envOverride = process.env.GROQ_MODEL;
+  const model = envOverride || persona.model || DEFAULT_MODEL;
 
-  let groqResp: Response;
-  try {
-    groqResp = await fetch(GROQ_URL, {
+  const callGroq = (modelId: string) =>
+    fetch(GROQ_URL, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({ model, messages, stream: true }),
+      body: JSON.stringify({ model: modelId, messages, stream: true }),
     });
+
+  let usedModel = model;
+  let groqResp: Response;
+  try {
+    groqResp = await callGroq(model);
   } catch (err: any) {
     return jsonError(502, `Failed to reach Groq: ${err?.message || err}`);
   }
 
+  // Rate-limited on the primary model — spread load onto the persona's
+  // fallback rather than failing outright. Skipped when GROQ_MODEL is an
+  // explicit override, since that's a deliberate single-model choice.
+  if (groqResp.status === 429 && !envOverride && persona.fallbackModel) {
+    usedModel = persona.fallbackModel;
+    try {
+      groqResp = await callGroq(usedModel);
+    } catch (err: any) {
+      return jsonError(502, `Failed to reach Groq: ${err?.message || err}`);
+    }
+  }
+
   if (!groqResp.ok || !groqResp.body) {
     const errText = await groqResp.text().catch(() => '');
-    return jsonError(502, `Groq API error (${groqResp.status}): ${errText}`);
+    return jsonError(502, `Groq API error (${groqResp.status}) using model ${usedModel}: ${errText}`);
   }
 
   const encoder = new TextEncoder();
