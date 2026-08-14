@@ -8,11 +8,13 @@
 // simple (not raw SSE) so the client doesn't need to know Groq's wire format.
 
 import { getAgentById, DEFAULT_AGENTS } from '../lib/agents';
+import { checkRateLimit, getClientIp, rateLimitResponseHeaders } from '../lib/rateLimit';
 
 export const config = { runtime: 'edge' };
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const DEFAULT_MODEL = 'llama-3.3-70b-versatile';
+const RATE_LIMIT_PER_MIN = Number(process.env.RATE_LIMIT_CHAT_PER_MIN) || 20;
 
 interface ChatRequestBody {
   agentId?: string;
@@ -29,6 +31,11 @@ export default async function handler(req: Request): Promise<Response> {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
     return jsonError(500, 'GROQ_API_KEY is not configured on the server. Set it in your Vercel project env vars.');
+  }
+
+  const rl = checkRateLimit(`chat:${getClientIp(req)}`, RATE_LIMIT_PER_MIN);
+  if (!rl.allowed) {
+    return jsonError(429, `Rate limit exceeded (${RATE_LIMIT_PER_MIN}/min). Try again shortly.`, rateLimitResponseHeaders(rl));
   }
 
   let body: ChatRequestBody;
@@ -135,9 +142,9 @@ export default async function handler(req: Request): Promise<Response> {
   });
 }
 
-function jsonError(status: number, message: string): Response {
+function jsonError(status: number, message: string, extraHeaders?: Record<string, string>): Response {
   return new Response(JSON.stringify({ error: message }), {
     status,
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...extraHeaders },
   });
 }

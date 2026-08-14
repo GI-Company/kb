@@ -27,6 +27,7 @@ import { execFile } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { checkRateLimit, getClientIp, rateLimitResponseHeaders } from '../lib/rateLimit';
 
 // Conservative — commands near-certain to exist in a Linux-based Node
 // serverless runtime. No git/python/go/rust/ffmpeg/sqlite3/network-probing
@@ -42,6 +43,7 @@ const ALLOWED_COMMANDS = new Set([
 const DANGEROUS_CHARS = /[&|;`$()<>]/;
 const EXEC_TIMEOUT_MS = 9000; // stay under the 10s function budget
 const MAX_OUTPUT_BYTES = 1024 * 1024;
+const RATE_LIMIT_PER_MIN = Number(process.env.RATE_LIMIT_EXEC_PER_MIN) || 30;
 
 interface ExecRequestBody {
   cmd?: string;
@@ -51,6 +53,14 @@ interface ExecRequestBody {
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Method not allowed' });
+    return;
+  }
+
+  const rl = checkRateLimit(`exec:${getClientIp(req)}`, RATE_LIMIT_PER_MIN);
+  res.setHeader?.('x-ratelimit-limit', String(rl.limit));
+  res.setHeader?.('x-ratelimit-remaining', String(rl.remaining));
+  if (!rl.allowed) {
+    res.status(429).json({ stdout: '', stderr: `Rate limit exceeded (${RATE_LIMIT_PER_MIN}/min). Try again shortly.\n`, code: 429 });
     return;
   }
 
