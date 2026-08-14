@@ -10,9 +10,13 @@
 //  - The allowlist is deliberately smaller than the Go version's. Vercel's
 //    Node function runtime is a minimal Linux image — things like git,
 //    python3, go, rust, ffmpeg, sqlite3, ping/dig/nslookup are NOT
-//    guaranteed to be installed, unlike a real host. Rather than guess and
-//    let those 500 unpredictably, this also does a `which <cmd>` existence
-//    check before running and returns a clean error if it's missing.
+//    guaranteed to be installed, unlike a real host. Rather than guess,
+//    a missing command is detected directly from the real exec attempt's
+//    ENOENT spawn error (Node's signal that the executable itself couldn't
+//    be found), not a separate `which` pre-check — `which` itself isn't
+//    guaranteed to be on this runtime's PATH either, and a pre-check that
+//    silently fails open/closed on its own missing dependency is worse
+//    than just trying the real thing and handling that specific failure.
 //  - 10s hard timeout (see vercel.json's functions.api/exec.ts.maxDuration),
 //    down from the Go version's 30s.
 //
@@ -95,21 +99,6 @@ export default async function handler(req: any, res: any) {
     safeArgs.push(arg);
   }
 
-  // Existence check — the allowlist above is a best guess at what this
-  // runtime actually ships; confirm before spawning rather than surfacing a
-  // raw ENOENT as a 500.
-  const available = await new Promise<boolean>(resolve => {
-    execFile('which', [cmd], (err) => resolve(!err));
-  });
-  if (!available) {
-    res.status(200).json({
-      stdout: '',
-      stderr: `'${cmd}' is allowlisted but not installed in this serverless environment.\n`,
-      code: 127,
-    });
-    return;
-  }
-
   let jailDir: string;
   try {
     jailDir = mkdtempSync(join(tmpdir(), 'kernos_jail_'));
@@ -127,7 +116,7 @@ export default async function handler(req: any, res: any) {
           cwd: jailDir,
           timeout: EXEC_TIMEOUT_MS,
           env: {
-            PATH: '/usr/local/bin:/usr/bin:/bin',
+            PATH: '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
             HOME: jailDir,
             TMPDIR: jailDir,
             LANG: 'en_US.UTF-8',
@@ -135,7 +124,13 @@ export default async function handler(req: any, res: any) {
           maxBuffer: MAX_OUTPUT_BYTES,
         },
         (error, stdout, stderr) => {
-          if (error && (error as any).killed) {
+          // ENOENT here means Node couldn't find/spawn the executable at
+          // all (distinct from the command running and exiting non-zero,
+          // where .code is a number) — that's our "not actually installed"
+          // signal, checked at the only place that can know for sure.
+          if (error && (error as any).code === 'ENOENT') {
+            resolve({ stdout: '', stderr: `'${cmd}' is allowlisted but not installed in this serverless environment.\n`, code: 127 });
+          } else if (error && (error as any).killed) {
             resolve({ stdout, stderr: stderr + '\nTIMEOUT: Process exceeded execution limit and was killed.\n', code: 1 });
           } else if (error) {
             resolve({ stdout, stderr: stderr || error.message, code: (error as any).code ?? 1 });
