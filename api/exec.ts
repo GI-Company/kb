@@ -27,7 +27,7 @@ import { execFile } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkRateLimit, getClientIp, rateLimitResponseHeaders } from '../lib/rateLimit';
+import { checkRateLimit, getClientIp, rateLimitResponseHeaders } from '../lib/rateLimit.js';
 
 // Conservative — commands near-certain to exist in a Linux-based Node
 // serverless runtime. No git/python/go/rust/ffmpeg/sqlite3/network-probing

@@ -14,8 +14,8 @@
 // transient DB hiccup.
 
 import { createHash } from 'node:crypto';
-import { checkRateLimit, getClientIp, rateLimitResponseHeaders } from '../lib/rateLimit';
-import { callSupabaseRpc, isSupabaseAdminConfigured } from '../lib/supabaseAdmin';
+import { checkRateLimit, getClientIp, rateLimitResponseHeaders } from '../lib/rateLimit.js';
+import { callSupabaseRpc, isSupabaseAdminConfigured } from '../lib/supabaseAdmin.js';
 
 const LIMIT_SECONDS = 15 * 60;
 // Heartbeats fire ~every 20s from lib/guestUsage.ts — a few/minute is

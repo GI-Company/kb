@@ -7,8 +7,8 @@
 // by a final { done: true } (or { error } on failure). Kept deliberately
 // simple (not raw SSE) so the client doesn't need to know Groq's wire format.
 
-import { getAgentById, DEFAULT_AGENTS } from '../lib/agents';
-import { checkRateLimit, getClientIp, rateLimitResponseHeaders } from '../lib/rateLimit';
+import { getAgentById, DEFAULT_AGENTS } from '../lib/agents.js';
+import { checkRateLimit, getClientIp, rateLimitResponseHeaders } from '../lib/rateLimit.js';
 
 export const config = { runtime: 'edge' };
 
