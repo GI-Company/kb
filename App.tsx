@@ -23,6 +23,7 @@ import { MultiAgentWorkspace } from './apps/MultiAgentWorkspace';
 import { TimelineSlider } from './apps/TimelineSlider';
 import { CinematicBoot } from './components/ui/CinematicBoot';
 import { ContextMenuProvider } from './components/ui/ContextMenu';
+import { Walkthrough, WALKTHROUGH_SEEN_KEY } from './components/ui/Walkthrough';
 import { kernel } from './services/kernel';
 import { AppUser, getSession, createGuestUser } from './lib/auth';
 import { identifyUser } from './lib/analytics';
@@ -31,7 +32,7 @@ import { AnimatePresence } from 'framer-motion';
 type BootPhase = 'boot' | 'bios' | 'login' | 'desktop';
 
 const App: React.FC = () => {
-  const { windows } = useOS();
+  const { windows, liteMode, openWalkthrough } = useOS();
   const [phase, setPhase] = useState<BootPhase>('boot');
   const [bootLines, setBootLines] = useState<string[]>([]);
   const [user, setUser] = useState<AppUser | null>(null);
@@ -65,6 +66,17 @@ const App: React.FC = () => {
     setPhase('desktop');
   };
 
+  // First-ever desktop visit auto-opens the walkthrough — deliberately a
+  // separate effect keyed on `phase`, not called inline in enterDesktop,
+  // so it only fires once the desktop (and its taskbar, which the tour
+  // spotlights) has actually mounted to the DOM.
+  useEffect(() => {
+    if (phase !== 'desktop') return;
+    let seen = true;
+    try { seen = localStorage.getItem(WALKTHROUGH_SEEN_KEY) === 'true'; } catch { /* default to seen=true, don't nag if storage is unavailable */ }
+    if (!seen) openWalkthrough();
+  }, [phase]);
+
   // Real Supabase session takes priority; otherwise a previously-chosen
   // local guest identity; otherwise show the login screen (which itself
   // offers a no-friction "Continue as Guest" escape hatch).
@@ -95,6 +107,15 @@ const App: React.FC = () => {
     }
     resolveSessionAndEnter();
   };
+
+  // Lite mode skips the cinematic boot animation entirely (and with it,
+  // the right-click-to-enter-BIOS affordance — an acceptable tradeoff for
+  // a mode whose whole point is "get to the desktop fast").
+  useEffect(() => {
+    if (liteMode && phase === 'boot') {
+      resolveSessionAndEnter();
+    }
+  }, [liteMode]);
 
   const handleLogin = (loggedInUser: AppUser) => {
     enterDesktop(loggedInUser);
@@ -128,6 +149,7 @@ const App: React.FC = () => {
 
   // ─── BOOT SCREEN ───
   if (phase === 'boot') {
+    if (liteMode) return null; // resolveSessionAndEnter() above takes over immediately
     return (
       <AnimatePresence>
         <CinematicBoot onComplete={handleBootComplete} />
@@ -149,36 +171,41 @@ const App: React.FC = () => {
   return (
     <ContextMenuProvider>
       <div className="w-screen h-screen bg-[#050505] overflow-hidden relative selection:bg-cyan-500/30">
-        {/* Dynamic Background Grid */}
-        <div
-          className="absolute inset-0 pointer-events-none opacity-20"
-          style={{
-            backgroundImage: `linear-gradient(to right, #1f1f1f 1px, transparent 1px), linear-gradient(to bottom, #1f1f1f 1px, transparent 1px)`,
-            backgroundSize: '40px 40px'
-          }}
-        />
+        {/* Dynamic Background Grid — decorative only, skipped in lite mode */}
+        {!liteMode && (
+          <div
+            className="absolute inset-0 pointer-events-none opacity-20"
+            style={{
+              backgroundImage: `linear-gradient(to right, #1f1f1f 1px, transparent 1px), linear-gradient(to bottom, #1f1f1f 1px, transparent 1px)`,
+              backgroundSize: '40px 40px'
+            }}
+          />
+        )}
 
         {/* Desktop Area */}
         <div className="absolute inset-0 z-0">
           <Desktop />
-          {/* Logo / Watermark */}
-          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none opacity-30">
-            <h1 className="text-9xl font-black text-white/15 tracking-tighter">KERNOS</h1>
-            <p className="text-white/25 font-mono mt-4 tracking-[1em]">BROWSER NATIVE OS</p>
-          </div>
+          {/* Logo / Watermark — decorative only, skipped in lite mode */}
+          {!liteMode && (
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-center pointer-events-none opacity-30">
+              <h1 className="text-9xl font-black text-white/15 tracking-tighter">KERNOS</h1>
+              <p className="text-white/25 font-mono mt-4 tracking-[1em]">BROWSER NATIVE OS</p>
+            </div>
+          )}
         </div>
 
         <ToastSystem />
 
         {/* Window Layer */}
         {windows.filter(win => win.desktopIndex === useOS.getState().currentDesktop).map(win => (
-          <Window key={win.id} data={win}>
+          <Window key={win.id} data={win} liteMode={liteMode}>
             {getAppContent(win.appId, win.data)}
           </Window>
         ))}
 
         <Taskbar />
         <AudioSystem />
+        <Walkthrough />
       </div>
     </ContextMenuProvider>
   );

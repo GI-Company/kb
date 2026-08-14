@@ -16,6 +16,28 @@ interface OSStore {
   currentDesktop: number;
   switchDesktop: (index: number) => void;
   moveWindowToDesktop: (id: string, index: number) => void;
+
+  // Faster/lower-overhead mode, not a feature-reduced one: skips the
+  // cinematic boot animation, hides decorative desktop chrome, and
+  // disables window open/close/drag spring physics. Persisted so it
+  // survives a reload.
+  liteMode: boolean;
+  setLiteMode: (v: boolean) => void;
+
+  // components/ui/Walkthrough.tsx reads this — App.tsx opens it once
+  // automatically on a user's first desktop visit; Settings.tsx's
+  // "Take the Tour" button re-opens it manually any time after.
+  walkthroughOpen: boolean;
+  openWalkthrough: () => void;
+  closeWalkthrough: () => void;
+}
+
+function readLiteModePref(): boolean {
+  try {
+    return localStorage.getItem('kernos_lite_mode') === 'true';
+  } catch {
+    return false;
+  }
 }
 
 export const useOS = create<OSStore>((set) => ({
@@ -23,6 +45,14 @@ export const useOS = create<OSStore>((set) => ({
   shortcuts: [],
   activeWindowId: '3',
   currentDesktop: 0,
+  walkthroughOpen: false,
+  openWalkthrough: () => set({ walkthroughOpen: true }),
+  closeWalkthrough: () => set({ walkthroughOpen: false }),
+  liteMode: readLiteModePref(),
+  setLiteMode: (v) => {
+    try { localStorage.setItem('kernos_lite_mode', String(v)); } catch { /* best-effort */ }
+    set({ liteMode: v });
+  },
 
   openWindow: (appId, title, data) => set((state) => {
     const id = Math.random().toString(36).substring(2, 9);

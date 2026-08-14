@@ -7,9 +7,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 interface WindowProps {
   data: WindowState;
   children: React.ReactNode;
+  liteMode?: boolean;
 }
 
-export const Window: React.FC<WindowProps> = ({ data, children }) => {
+export const Window: React.FC<WindowProps> = ({ data, children, liteMode }) => {
   const { closeWindow, focusWindow, moveWindow, resizeWindow, minimizeWindow, maximizeWindow } = useOS();
   const [isDragging, setIsDragging] = useState(false);
   const [snapZone, setSnapZone] = useState<'left' | 'right' | 'top' | null>(null);
@@ -109,12 +110,12 @@ export const Window: React.FC<WindowProps> = ({ data, children }) => {
     <AnimatePresence>
       {!data.isMinimized && (
         <motion.div
-          initial={{ opacity: 0, scale: 0.95, y: 10 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.95, y: 20, transition: { duration: 0.15 } }}
-          transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+          initial={liteMode ? { opacity: 0 } : { opacity: 0, scale: 0.95, y: 10 }}
+          animate={liteMode ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
+          exit={liteMode ? { opacity: 0, transition: { duration: 0.05 } } : { opacity: 0, scale: 0.95, y: 20, transition: { duration: 0.15 } }}
+          transition={liteMode ? { duration: 0.08 } : { type: 'spring', damping: 25, stiffness: 300 }}
           style={{ ...style, zIndex: data.zIndex, position: 'absolute' }}
-          className={`flex flex-col bg-[#0f0f13]/85 backdrop-blur-2xl rounded-xl overflow-hidden transition-[box-shadow,border-color] duration-300 ${borderClass}`}
+          className={`flex flex-col bg-[#0f0f13]/85 backdrop-blur-2xl rounded-xl overflow-hidden ${liteMode ? '' : 'transition-[box-shadow,border-color] duration-300'} ${borderClass}`}
           onMouseDown={() => focusWindow(data.id)}
         >
           {/* Title Bar - Glassmorphic */}

@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { kernel } from '../services/kernel';
+import { useOS } from '../store';
 import { Envelope } from '../types';
 import { getSession, signOut, AppUser } from '../lib/auth';
 import { resetAnalyticsIdentity } from '../lib/analytics';
-import { Settings, Save, Undo2, Palette, Type, Globe, Cpu, LogOut, UserCircle, Loader2 } from 'lucide-react';
+import { Settings, Save, Undo2, Palette, Type, Globe, Cpu, LogOut, UserCircle, Loader2, Zap, Compass } from 'lucide-react';
 
 interface ConfigEntry {
   key: string;
@@ -20,6 +21,7 @@ const DEFAULT_CONFIGS: Omit<ConfigEntry, 'value'>[] = [
 ];
 
 export const SettingsApp: React.FC = () => {
+  const { liteMode, setLiteMode, openWalkthrough } = useOS();
   const [configs, setConfigs] = useState<ConfigEntry[]>([]);
   const [editKey, setEditKey] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
@@ -114,6 +116,45 @@ export const SettingsApp: React.FC = () => {
             Using a guest identity (chat history stays on this browser only). Reload and sign in from the login screen for an account that syncs across devices.
           </div>
         )}
+      </div>
+
+      <div className="mb-6 p-4 rounded-lg bg-white/5 border border-white/5">
+        <div className="flex items-center gap-2 mb-3">
+          <Zap size={14} className="text-yellow-400" />
+          <span className="text-xs font-mono text-gray-400 uppercase tracking-wider">Preferences</span>
+        </div>
+
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <div className="text-sm text-white">Lite Mode</div>
+            <div className="text-[11px] text-gray-500">Skips the boot animation and window motion — faster on weaker devices, not fewer features.</div>
+          </div>
+          <button
+            onClick={() => setLiteMode(!liteMode)}
+            className={`shrink-0 relative w-10 h-5.5 rounded-full transition-colors ${liteMode ? 'bg-cyan-500' : 'bg-white/10'}`}
+            style={{ width: 40, height: 22 }}
+            title={liteMode ? 'Disable Lite Mode' : 'Enable Lite Mode'}
+          >
+            <span
+              className="absolute top-0.5 left-0.5 w-4.5 h-4.5 rounded-full bg-white transition-transform"
+              style={{ width: 18, height: 18, transform: liteMode ? 'translateX(18px)' : 'translateX(0)' }}
+            />
+          </button>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm text-white">Interactive Walkthrough</div>
+            <div className="text-[11px] text-gray-500">Replay the guided tour of the taskbar apps.</div>
+          </div>
+          <button
+            onClick={openWalkthrough}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-xs font-medium hover:bg-cyan-500/20 transition-colors"
+          >
+            <Compass size={12} />
+            Take the Tour
+          </button>
+        </div>
       </div>
 
       <div className="space-y-3">
