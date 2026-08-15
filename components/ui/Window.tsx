@@ -4,6 +4,17 @@ import { WindowState, COLORS } from '../../types';
 import { X, Minus, Square, Terminal, Monitor, FileCode, HardDrive, Cpu, Workflow, Package, Bot, Brain, FolderGit2, Activity, Settings, HelpCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { FEATURE_TOURS } from '../../lib/featureTours';
+import { getSetting, subscribeSettings } from '../../lib/settings';
+
+// lib/settings.ts's reduceMotion is a separate toggle from Lite Mode (which
+// also skips the boot sequence and is about overall speed, not motion
+// specifically) — either one collapses Window's open/close animation to
+// the same instant variant.
+function useReduceMotion(): boolean {
+  const [reduce, setReduce] = useState(() => getSetting('reduceMotion'));
+  useEffect(() => subscribeSettings(s => setReduce(s.reduceMotion)), []);
+  return reduce;
+}
 
 interface WindowProps {
   data: WindowState;
@@ -13,6 +24,8 @@ interface WindowProps {
 
 export const Window: React.FC<WindowProps> = ({ data, children, liteMode }) => {
   const { closeWindow, focusWindow, moveWindow, resizeWindow, minimizeWindow, maximizeWindow, openFeatureTour, isMobile } = useOS();
+  const settingsReduceMotion = useReduceMotion();
+  const reduceAnim = liteMode || settingsReduceMotion;
   const hasTour = !!FEATURE_TOURS[data.appId];
   const [isDragging, setIsDragging] = useState(false);
   const [snapZone, setSnapZone] = useState<'left' | 'right' | 'top' | null>(null);
@@ -132,12 +145,12 @@ export const Window: React.FC<WindowProps> = ({ data, children, liteMode }) => {
     <AnimatePresence>
       {!data.isMinimized && (
         <motion.div
-          initial={liteMode ? { opacity: 0 } : { opacity: 0, scale: 0.95, y: 10 }}
-          animate={liteMode ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
-          exit={liteMode ? { opacity: 0, transition: { duration: 0.05 } } : { opacity: 0, scale: 0.95, y: 20, transition: { duration: 0.15 } }}
-          transition={liteMode ? { duration: 0.08 } : { type: 'spring', damping: 25, stiffness: 300 }}
+          initial={reduceAnim ? { opacity: 0 } : { opacity: 0, scale: 0.95, y: 10 }}
+          animate={reduceAnim ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
+          exit={reduceAnim ? { opacity: 0, transition: { duration: 0.05 } } : { opacity: 0, scale: 0.95, y: 20, transition: { duration: 0.15 } }}
+          transition={reduceAnim ? { duration: 0.08 } : { type: 'spring', damping: 25, stiffness: 300 }}
           style={{ ...style, zIndex: data.zIndex, position: 'absolute' }}
-          className={`flex flex-col bg-[#0f0f13]/85 backdrop-blur-2xl ${isMobile ? '' : 'rounded-xl'} overflow-hidden ${liteMode ? '' : 'transition-[box-shadow,border-color] duration-300'} ${isMobile ? 'border-0' : borderClass}`}
+          className={`flex flex-col bg-[var(--kernos-bg-window)] backdrop-blur-2xl ${isMobile ? '' : 'rounded-xl'} overflow-hidden ${reduceAnim ? '' : 'transition-[box-shadow,border-color] duration-300'} ${isMobile ? 'border-0' : borderClass}`}
           onPointerDown={() => focusWindow(data.id)}
         >
           {/* Title Bar - Glassmorphic */}

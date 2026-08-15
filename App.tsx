@@ -31,6 +31,7 @@ import { kernel } from './services/kernel';
 import { AppUser, getSession, createGuestUser } from './lib/auth';
 import { identifyUser } from './lib/analytics';
 import { startGuestUsageTracking, GUEST_LIMIT_MESSAGE_KEY } from './lib/guestUsage';
+import { getSetting } from './lib/settings';
 import { AnimatePresence } from 'framer-motion';
 
 type BootPhase = 'boot' | 'bios' | 'login' | 'desktop';
@@ -139,9 +140,12 @@ const App: React.FC = () => {
 
   // Lite mode skips the cinematic boot animation entirely (and with it,
   // the right-click-to-enter-BIOS affordance — an acceptable tradeoff for
-  // a mode whose whole point is "get to the desktop fast").
+  // a mode whose whole point is "get to the desktop fast"). Settings'
+  // "Show boot sequence" toggle does the same thing independent of Lite
+  // Mode, for someone who wants everything else about Lite Mode without
+  // giving up the boot animation, or vice versa.
   useEffect(() => {
-    if (liteMode && phase === 'boot') {
+    if ((liteMode || !getSetting('showBootSequence')) && phase === 'boot') {
       resolveSessionAndEnter();
     }
   }, [liteMode]);
@@ -178,7 +182,7 @@ const App: React.FC = () => {
 
   // ─── BOOT SCREEN ───
   if (phase === 'boot') {
-    if (liteMode) return null; // resolveSessionAndEnter() above takes over immediately
+    if (liteMode || !getSetting('showBootSequence')) return null; // resolveSessionAndEnter() above takes over immediately
     return (
       <AnimatePresence>
         <CinematicBoot onComplete={handleBootComplete} />
@@ -206,7 +210,7 @@ const App: React.FC = () => {
   // ─── DESKTOP ───
   return (
     <ContextMenuProvider>
-      <div className="w-screen h-screen bg-[#050505] overflow-hidden relative selection:bg-cyan-500/30">
+      <div className="w-screen h-screen bg-[var(--kernos-bg-desktop)] overflow-hidden relative selection:bg-cyan-500/30">
         {/* Dynamic Background Grid — decorative only, skipped in lite mode */}
         {!liteMode && (
           <div

@@ -679,7 +679,10 @@ export const CDEApp: React.FC = () => {
                   <TerminalIcon size={12} className="text-cyan-400" />
                   <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">CDE Terminal</span>
                 </div>
-                <div className="flex-1 overflow-y-auto px-4 py-2 font-mono text-[11px] leading-relaxed text-gray-400 custom-scrollbar">
+                <div
+                  className="flex-1 overflow-y-auto px-4 py-2 font-mono leading-relaxed text-gray-400 custom-scrollbar"
+                  style={{ fontSize: 'var(--kernos-terminal-font-size, 13px)' }}
+                >
                   {terminalOutput.map((line, i) => (
                     <div key={i} className={`
                       ${line.startsWith('$') ? 'text-cyan-400 font-bold mt-1' : ''}

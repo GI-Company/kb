@@ -216,7 +216,11 @@ export const TerminalApp: React.FC = () => {
     : ghostPrediction && input.length > 0 ? ` → ${ghostPrediction}` : '';
 
   return (
-    <div className="h-full bg-[#0c0c0c] text-gray-300 font-mono text-sm p-4 overflow-y-auto" onClick={() => inputRef.current?.focus()}>
+    <div
+      className="h-full bg-[#0c0c0c] text-gray-300 font-mono p-4 overflow-y-auto"
+      style={{ fontSize: 'var(--kernos-terminal-font-size, 13px)' }}
+      onClick={() => inputRef.current?.focus()}
+    >
       {lines.map(line => (
         <div key={line.id} className={`mb-1 break-words ${
           line.type === 'error' ? 'text-red-400' : 

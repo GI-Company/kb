@@ -1,1 +1,33 @@
 @import "tailwindcss";
+
+/* lib/settings.ts's theme toggle — scoped to the desktop background,
+   taskbar, and window chrome (App.tsx, components/ui/Taskbar.tsx,
+   components/ui/Window.tsx all read these vars). Individual app panels
+   keep their hardcoded dark Tailwind classes either way; see
+   lib/settings.ts's `theme` doc comment for why that's an explicit scope
+   choice, not an oversight. */
+:root {
+  --kernos-bg-desktop: #050505;
+  --kernos-bg-window: rgba(15, 15, 19, 0.85);
+  --kernos-bg-taskbar: rgba(10, 10, 15, 0.9);
+  --kernos-bg-taskbar-solid: #0f0f13;
+}
+
+:root[data-theme="light"] {
+  --kernos-bg-desktop: #eef0f3;
+  --kernos-bg-window: rgba(255, 255, 255, 0.92);
+  --kernos-bg-taskbar: rgba(255, 255, 255, 0.85);
+  --kernos-bg-taskbar-solid: #ffffff;
+}
+
+/* lib/settings.ts's reduceMotion — a real, broad kill switch for ordinary
+   CSS transitions/animations app-wide. Framer-motion's spring-driven
+   window open/close doesn't go through CSS transitions, so Window.tsx
+   separately checks the same setting to pick its instant animation
+   variant (the same one Lite Mode already uses). */
+.kernos-reduce-motion,
+.kernos-reduce-motion * {
+  transition-duration: 0.01ms !important;
+  animation-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}

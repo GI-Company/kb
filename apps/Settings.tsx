@@ -1,32 +1,41 @@
 import React, { useEffect, useState } from 'react';
-import { kernel } from '../services/kernel';
 import { useOS } from '../store';
-import { Envelope } from '../types';
 import { getSession, signOut, AppUser } from '../lib/auth';
-import { resetAnalyticsIdentity } from '../lib/analytics';
+import { resetAnalyticsIdentity, setAnalyticsOptOut } from '../lib/analytics';
 import { DONATE_URL, isDonateConfigured } from '../lib/donate';
-import { Settings, Save, Undo2, Palette, Type, Globe, Cpu, LogOut, UserCircle, Loader2, Zap, Compass, Heart, ExternalLink } from 'lucide-react';
+import { DEFAULT_AGENTS } from '../lib/agents';
+import { getSettings, setSetting, resetSettings, subscribeSettings, KernosSettings } from '../lib/settings';
+import { Settings, Palette, Type, Bot, LogOut, UserCircle, Loader2, Zap, Compass, Heart, ExternalLink, Sun, Moon, RotateCcw, ShieldOff, PlaySquare } from 'lucide-react';
 
-interface ConfigEntry {
-  key: string;
-  value: string;
-  label: string;
-  icon: React.ReactNode;
-}
+// Toggle switch — shared visual for every boolean preference below, matches
+// the Lite Mode toggle this replaced/extended.
+const Toggle: React.FC<{ checked: boolean; onChange: (v: boolean) => void; title?: string }> = ({ checked, onChange, title }) => (
+  <button
+    onClick={() => onChange(!checked)}
+    className={`shrink-0 relative rounded-full transition-colors ${checked ? 'bg-cyan-500' : 'bg-white/10'}`}
+    style={{ width: 40, height: 22 }}
+    title={title}
+  >
+    <span
+      className="absolute top-0.5 left-0.5 rounded-full bg-white transition-transform"
+      style={{ width: 18, height: 18, transform: checked ? 'translateX(18px)' : 'translateX(0)' }}
+    />
+  </button>
+);
 
-const DEFAULT_CONFIGS: Omit<ConfigEntry, 'value'>[] = [
-  { key: 'theme', label: 'Theme', icon: <Palette size={14} className="text-purple-400" /> },
-  { key: 'font_size', label: 'Font Size', icon: <Type size={14} className="text-cyan-400" /> },
-  { key: 'lm_endpoint', label: 'LM Studio URL', icon: <Globe size={14} className="text-green-400" /> },
-  { key: 'ai_model', label: 'AI Model', icon: <Cpu size={14} className="text-orange-400" /> },
-];
+const Row: React.FC<{ label: string; hint?: string; children: React.ReactNode }> = ({ label, hint, children }) => (
+  <div className="flex items-center justify-between gap-4 mb-3 last:mb-0">
+    <div className="min-w-0">
+      <div className="text-sm text-white">{label}</div>
+      {hint && <div className="text-[11px] text-gray-500 leading-relaxed mt-0.5">{hint}</div>}
+    </div>
+    <div className="shrink-0">{children}</div>
+  </div>
+);
 
 export const SettingsApp: React.FC = () => {
   const { liteMode, setLiteMode, openWalkthrough } = useOS();
-  const [configs, setConfigs] = useState<ConfigEntry[]>([]);
-  const [editKey, setEditKey] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState('');
-  const [saving, setSaving] = useState(false);
+  const [settings, setSettings] = useState<KernosSettings>(getSettings());
   const [sessionUser, setSessionUser] = useState<AppUser | null>(null);
   const [guestUser, setGuestUser] = useState<AppUser | null>(null);
   const [signingOut, setSigningOut] = useState(false);
@@ -39,56 +48,22 @@ export const SettingsApp: React.FC = () => {
     } catch { /* corrupt/unavailable storage — just skip the guest badge */ }
   }, []);
 
-  // Covers both real accounts (Supabase signOut) and guest sessions
-  // (just clearing the locally-saved identity) — either way, reloading
-  // with no session left drops back into App.tsx's resolveSessionAndEnter(),
-  // which falls through to the login screen when it finds neither.
+  // Any tab (or Settings.tsx itself) changing a setting updates this
+  // panel's own display without a manual re-fetch — same pattern the old
+  // sys.config:ack listener was trying to achieve, just actually wired.
+  useEffect(() => subscribeSettings(setSettings), []);
+
+  const update = <K extends keyof KernosSettings>(key: K, value: KernosSettings[K]) => {
+    setSetting(key, value);
+    if (key === 'analyticsOptOut') setAnalyticsOptOut(value as boolean);
+  };
+
   const handleSignOut = async () => {
     setSigningOut(true);
     await signOut();
     resetAnalyticsIdentity();
     localStorage.removeItem('kernos_guest_user');
     window.location.reload();
-  };
-
-  // Fetch current values on mount
-  useEffect(() => {
-    DEFAULT_CONFIGS.forEach(cfg => {
-      kernel.publish('sys.config:get', { key: cfg.key });
-    });
-
-    const unsubscribe = kernel.subscribe((env: Envelope) => {
-      if (env.topic === 'sys.config:ack') {
-        const { key, value } = env.payload as { key: string; value: string };
-        setConfigs(prev => {
-          const existing = prev.find(c => c.key === key);
-          const meta = DEFAULT_CONFIGS.find(d => d.key === key);
-          if (existing) {
-            return prev.map(c => c.key === key ? { ...c, value } : c);
-          }
-          return [...prev, { key, value: value || '', label: meta?.label || key, icon: meta?.icon || null }];
-        });
-      }
-    });
-    return unsubscribe;
-  }, []);
-
-  const handleSave = (key: string, value: string) => {
-    setSaving(true);
-    kernel.publish('sys.config:set', { key, value });
-    setConfigs(prev => prev.map(c => c.key === key ? { ...c, value } : c));
-    setEditKey(null);
-    
-    kernel.publish('sys.notify', { title: 'Settings', message: `Updated "${key}" successfully.`, urgency: 'success' });
-    setTimeout(() => setSaving(false), 500);
-  };
-
-  const handleUndo = (key: string) => {
-    kernel.publish('sys.undo:trigger', { category: 'sys.config', target: key });
-    // Re-fetch after undo
-    setTimeout(() => {
-      kernel.publish('sys.config:get', { key });
-    }, 300);
   };
 
   return (
@@ -141,34 +116,58 @@ export const SettingsApp: React.FC = () => {
       </div>
 
       <div className="mb-6 p-4 rounded-lg bg-white/5 border border-white/5">
-        <div className="flex items-center gap-2 mb-3">
-          <Zap size={14} className="text-yellow-400" />
-          <span className="text-xs font-mono text-gray-400 uppercase tracking-wider">Preferences</span>
-        </div>
-
         <div className="flex items-center justify-between mb-3">
-          <div>
-            <div className="text-sm text-white">Lite Mode</div>
-            <div className="text-[11px] text-gray-500">Skips the boot animation and window motion — faster on weaker devices, not fewer features.</div>
+          <div className="flex items-center gap-2">
+            <Zap size={14} className="text-yellow-400" />
+            <span className="text-xs font-mono text-gray-400 uppercase tracking-wider">Preferences</span>
           </div>
           <button
-            onClick={() => setLiteMode(!liteMode)}
-            className={`shrink-0 relative w-10 h-5.5 rounded-full transition-colors ${liteMode ? 'bg-cyan-500' : 'bg-white/10'}`}
-            style={{ width: 40, height: 22 }}
-            title={liteMode ? 'Disable Lite Mode' : 'Enable Lite Mode'}
+            onClick={() => resetSettings()}
+            className="flex items-center gap-1 text-[10px] text-gray-600 hover:text-gray-300 transition-colors"
+            title="Reset all preferences below to defaults"
           >
-            <span
-              className="absolute top-0.5 left-0.5 w-4.5 h-4.5 rounded-full bg-white transition-transform"
-              style={{ width: 18, height: 18, transform: liteMode ? 'translateX(18px)' : 'translateX(0)' }}
-            />
+            <RotateCcw size={10} /> Reset
           </button>
         </div>
 
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-sm text-white">Interactive Walkthrough</div>
-            <div className="text-[11px] text-gray-500">Replay the guided tour of the taskbar apps.</div>
+        <Row label="Theme" hint="Applies to the desktop, taskbar, and window frames. Individual app panels stay dark for now.">
+          <div className="flex gap-1 bg-black/40 rounded-lg p-1 border border-white/5">
+            <button
+              onClick={() => update('theme', 'dark')}
+              className={`p-1.5 rounded flex items-center gap-1 text-[10px] transition-colors ${settings.theme === 'dark' ? 'bg-white/10 text-white' : 'text-gray-500'}`}
+            >
+              <Moon size={12} /> Dark
+            </button>
+            <button
+              onClick={() => update('theme', 'light')}
+              className={`p-1.5 rounded flex items-center gap-1 text-[10px] transition-colors ${settings.theme === 'light' ? 'bg-white/10 text-white' : 'text-gray-500'}`}
+            >
+              <Sun size={12} /> Light
+            </button>
           </div>
+        </Row>
+
+        <div className="h-px bg-white/5 my-3" />
+
+        <Row label="Lite Mode" hint="Skips the boot animation and window motion — faster on weaker devices, not fewer features.">
+          <Toggle checked={liteMode} onChange={setLiteMode} title={liteMode ? 'Disable Lite Mode' : 'Enable Lite Mode'} />
+        </Row>
+
+        <div className="h-px bg-white/5 my-3" />
+
+        <Row label="Show Boot Sequence" hint="Play the cinematic BIOS-style boot on next launch. Independent of Lite Mode.">
+          <Toggle checked={settings.showBootSequence} onChange={v => update('showBootSequence', v)} />
+        </Row>
+
+        <div className="h-px bg-white/5 my-3" />
+
+        <Row label="Reduce Motion" hint="Disables window open/close animation and other transitions app-wide.">
+          <Toggle checked={settings.reduceMotion} onChange={v => update('reduceMotion', v)} />
+        </Row>
+
+        <div className="h-px bg-white/5 my-3" />
+
+        <Row label="Interactive Walkthrough" hint="Replay the guided tour of the taskbar apps.">
           <button
             onClick={openWalkthrough}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-xs font-medium hover:bg-cyan-500/20 transition-colors"
@@ -176,12 +175,87 @@ export const SettingsApp: React.FC = () => {
             <Compass size={12} />
             Take the Tour
           </button>
-        </div>
+        </Row>
       </div>
 
       <div className="mb-6 p-4 rounded-lg bg-white/5 border border-white/5">
         <div className="flex items-center gap-2 mb-3">
-          <Heart size={14} className="text-pink-400" />
+          <Bot size={14} className="text-purple-400" />
+          <span className="text-xs font-mono text-gray-400 uppercase tracking-wider">AI Chat</span>
+        </div>
+
+        <Row label="Default Agent" hint="Which persona AI Chat opens with. Leave as Auto to use the first agent in the roster.">
+          <select
+            value={settings.defaultPersona}
+            onChange={e => update('defaultPersona', e.target.value)}
+            className="bg-black/40 border border-white/10 rounded px-2 py-1.5 text-xs text-white outline-none focus:border-cyan-500/50"
+          >
+            <option value="">Auto</option>
+            {DEFAULT_AGENTS.map(a => (
+              <option key={a.id} value={a.id}>{a.displayName}</option>
+            ))}
+          </select>
+        </Row>
+      </div>
+
+      <div className="mb-6 p-4 rounded-lg bg-white/5 border border-white/5">
+        <div className="flex items-center gap-2 mb-3">
+          <Type size={14} className="text-cyan-400" />
+          <span className="text-xs font-mono text-gray-400 uppercase tracking-wider">Terminal</span>
+        </div>
+
+        <Row label="Font Size" hint="Applies to the Terminal app and CDE's integrated terminal panel.">
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min={10}
+              max={20}
+              step={1}
+              value={settings.terminalFontSize}
+              onChange={e => update('terminalFontSize', Number(e.target.value))}
+              className="w-28 accent-cyan-400"
+            />
+            <span className="text-xs font-mono text-gray-400 w-8 text-right">{settings.terminalFontSize}px</span>
+          </div>
+        </Row>
+      </div>
+
+      <div className="mb-6 p-4 rounded-lg bg-white/5 border border-white/5">
+        <div className="flex items-center gap-2 mb-3">
+          <PlaySquare size={14} className="text-orange-400" />
+          <span className="text-xs font-mono text-gray-400 uppercase tracking-wider">Guest Access</span>
+        </div>
+
+        <Row label="Low-Time Warning" hint="Taskbar's countdown chip turns red once remaining daily guest time drops below this.">
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min={30}
+              max={300}
+              step={30}
+              value={settings.guestQuotaWarningSeconds}
+              onChange={e => update('guestQuotaWarningSeconds', Number(e.target.value))}
+              className="w-28 accent-orange-400"
+            />
+            <span className="text-xs font-mono text-gray-400 w-12 text-right">{Math.round(settings.guestQuotaWarningSeconds / 60 * 10) / 10}m</span>
+          </div>
+        </Row>
+      </div>
+
+      <div className="mb-6 p-4 rounded-lg bg-white/5 border border-white/5">
+        <div className="flex items-center gap-2 mb-3">
+          <ShieldOff size={14} className="text-red-400" />
+          <span className="text-xs font-mono text-gray-400 uppercase tracking-wider">Privacy</span>
+        </div>
+
+        <Row label="Opt Out of Analytics" hint="Stops PostHog from receiving events from this browser, immediately. No effect if analytics isn't configured for this deployment.">
+          <Toggle checked={settings.analyticsOptOut} onChange={v => update('analyticsOptOut', v)} />
+        </Row>
+      </div>
+
+      <div className="mb-6 p-4 rounded-lg bg-white/5 border border-white/5">
+        <div className="flex items-center gap-2 mb-3">
+          <Palette size={14} className="text-pink-400" />
           <span className="text-xs font-mono text-gray-400 uppercase tracking-wider">Support Kernos</span>
         </div>
         <p className="text-[11px] text-gray-500 leading-relaxed mb-3">
@@ -206,61 +280,6 @@ export const SettingsApp: React.FC = () => {
           <div className="text-[10px] text-gray-600 italic">Donations aren't set up yet.</div>
         )}
       </div>
-
-      <div className="space-y-3">
-        {configs.map(cfg => (
-          <div key={cfg.key} className="p-4 rounded-lg bg-white/5 border border-white/5 hover:border-white/10 transition-colors">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                {cfg.icon}
-                <span className="text-xs font-mono text-gray-400 uppercase tracking-wider">{cfg.label}</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => handleUndo(cfg.key)}
-                  className="p-1.5 rounded hover:bg-white/10 text-gray-500 hover:text-yellow-400 transition-colors"
-                  title="Undo last change"
-                >
-                  <Undo2 size={14} />
-                </button>
-              </div>
-            </div>
-            
-            {editKey === cfg.key ? (
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={editValue}
-                  onChange={e => setEditValue(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && handleSave(cfg.key, editValue)}
-                  className="flex-1 bg-black/50 border border-white/10 rounded px-3 py-1.5 text-sm font-mono text-white outline-none focus:border-cyan-500/50"
-                  autoFocus
-                />
-                <button
-                  onClick={() => handleSave(cfg.key, editValue)}
-                  className="px-3 py-1.5 rounded bg-cyan-500/20 text-cyan-400 text-xs font-bold hover:bg-cyan-500/30 transition-colors flex items-center gap-1"
-                >
-                  <Save size={12} /> Save
-                </button>
-              </div>
-            ) : (
-              <div
-                onClick={() => { setEditKey(cfg.key); setEditValue(cfg.value); }}
-                className="text-sm font-mono text-white/80 cursor-pointer hover:text-white px-3 py-1.5 rounded bg-black/30 border border-transparent hover:border-white/10 transition-all"
-              >
-                {cfg.value || <span className="text-gray-600 italic">not set</span>}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {configs.length === 0 && (
-        <div className="text-center text-gray-600 mt-10">
-          <Settings className="mx-auto mb-3 opacity-30" size={32} />
-          <p className="text-sm">Connecting to kernel...</p>
-        </div>
-      )}
     </div>
   );
 };

@@ -4,14 +4,17 @@ import { Terminal, Monitor, FileCode, HardDrive, Cpu, Menu, Workflow, Bot, Brain
 import { motion, AnimatePresence } from 'framer-motion';
 import { useContextMenu } from './ContextMenu';
 import { formatRemaining } from '../../lib/guestUsage';
+import { getSetting, subscribeSettings } from '../../lib/settings';
 
 // Guest-only daily quota countdown (see lib/guestUsage.ts / api/guest-usage.ts).
 // Renders nothing once guestRemainingSeconds is null — real accounts, and
 // guest sessions before the server-configured check comes back, show no chip.
 const GuestUsageChip: React.FC = () => {
   const remaining = useOS(s => s.guestRemainingSeconds);
+  const [warningThreshold, setWarningThreshold] = useState(() => getSetting('guestQuotaWarningSeconds'));
+  useEffect(() => subscribeSettings(s => setWarningThreshold(s.guestQuotaWarningSeconds)), []);
   if (remaining === null) return null;
-  const low = remaining <= 120;
+  const low = remaining <= warningThreshold;
   return (
     <div
       className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border backdrop-blur-sm ${
@@ -52,7 +55,7 @@ const TipButton: React.FC<{ label: string; onClick: () => void; onContextMenu?: 
       {children}
     </motion.button>
     <div className="pointer-events-none absolute -top-10 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-all duration-200 z-[999]">
-      <div className="bg-[#0f0f13]/95 backdrop-blur-md border border-white/10 px-2.5 py-1 rounded shadow-xl text-[10px] text-gray-300 font-mono whitespace-nowrap transform scale-95 group-hover:scale-100 transition-transform origin-bottom">
+      <div className="bg-[var(--kernos-bg-taskbar-solid)] backdrop-blur-md border border-white/10 px-2.5 py-1 rounded shadow-xl text-[10px] text-gray-300 font-mono whitespace-nowrap transform scale-95 group-hover:scale-100 transition-transform origin-bottom">
         {label}
         <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 border-l-4 border-r-4 border-t-4 border-transparent border-t-[#0f0f13]/95" />
       </div>
@@ -173,14 +176,14 @@ export const Taskbar: React.FC = () => {
     return (
       <>
         {/* Top status strip */}
-        <div className="h-7 w-full bg-[#0a0a0f]/90 backdrop-blur-2xl flex items-center justify-end gap-2 px-3 z-[9000] absolute top-0 select-none" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
+        <div className="h-7 w-full bg-[var(--kernos-bg-taskbar)] backdrop-blur-2xl flex items-center justify-end gap-2 px-3 z-[9000] absolute top-0 select-none" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
           <GuestUsageChip />
           <Clock />
         </div>
 
         {/* Bottom nav */}
         <div
-          className="h-16 w-full bg-[#0a0a0f]/90 backdrop-blur-2xl border-t border-white/5 flex items-center px-2 gap-1 justify-between z-[9000] absolute bottom-0 select-none shadow-[0_-10px_40px_rgba(0,0,0,0.5)]"
+          className="h-16 w-full bg-[var(--kernos-bg-taskbar)] backdrop-blur-2xl border-t border-white/5 flex items-center px-2 gap-1 justify-between z-[9000] absolute bottom-0 select-none shadow-[0_-10px_40px_rgba(0,0,0,0.5)]"
           style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
         >
           <button
@@ -224,7 +227,7 @@ export const Taskbar: React.FC = () => {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0, transition: { duration: 0.15 } }}
-              className="fixed inset-0 z-[9500] bg-[#0a0a0f]/98 backdrop-blur-2xl flex flex-col"
+              className="fixed inset-0 z-[9500] bg-[var(--kernos-bg-taskbar)] backdrop-blur-2xl flex flex-col"
               style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
             >
               <div className="flex items-center justify-between px-5 pt-4 pb-2">
@@ -261,7 +264,7 @@ export const Taskbar: React.FC = () => {
       initial={{ y: 50, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
       transition={{ type: 'spring', damping: 20, stiffness: 200, delay: 0.2 }}
-      className="h-[52px] w-full bg-[#0a0a0f]/80 backdrop-blur-2xl border-t border-white/5 flex items-center px-4 justify-between z-[9000] absolute bottom-0 select-none shadow-[0_-10px_40px_rgba(0,0,0,0.5)]"
+      className="h-[52px] w-full bg-[var(--kernos-bg-taskbar)] backdrop-blur-2xl border-t border-white/5 flex items-center px-4 justify-between z-[9000] absolute bottom-0 select-none shadow-[0_-10px_40px_rgba(0,0,0,0.5)]"
     >
       <div className="flex items-center h-full gap-2">
         {/* Hamburger / App Launcher — ALL apps */}
@@ -277,7 +280,7 @@ export const Taskbar: React.FC = () => {
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95, y: 10, transition: { duration: 0.15 } }}
                 transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-                className="absolute bottom-[60px] left-0 w-64 bg-[#0f0f13]/95 backdrop-blur-3xl border border-white/10 rounded-xl shadow-2xl shadow-black/80 p-2 flex flex-col gap-0.5 z-[999]"
+                className="absolute bottom-[60px] left-0 w-64 bg-[var(--kernos-bg-taskbar-solid)] backdrop-blur-3xl border border-white/10 rounded-xl shadow-2xl shadow-black/80 p-2 flex flex-col gap-0.5 z-[999]"
               >
                 <div className="px-3 py-2 text-[10px] text-gray-500 font-mono uppercase tracking-widest border-b border-white/5 mb-2">Applications</div>
                 {APP_REGISTRY.map(app => {

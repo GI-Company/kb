@@ -5,6 +5,7 @@ import { extractToolCall, stripToolBlock } from '../lib/localModelTools';
 import { runTool } from '../lib/kernosTools';
 import { getCurrentUserId } from '../lib/auth';
 import { trackEvent } from '../lib/analytics';
+import { getSetting } from '../lib/settings';
 import { Bot, Send, Loader2, ChevronDown, ChevronRight, Zap, ImagePlus, Brain, Plus, MessageSquare, Trash2, Clock } from 'lucide-react';
 
 interface ChatMessage {
@@ -175,6 +176,9 @@ export const AIChatApp: React.FC = () => {
                     setDirectMode(false);
                     setSelectedAgent(prev => {
                         if (prev) return prev;
+                        const preferred = getSetting('defaultPersona');
+                        const preferredAgent = preferred && agentClients.find(a => a.id === preferred);
+                        if (preferredAgent) return preferredAgent.id;
                         const chatAgent = agentClients.find(a => a.id === 'agent-chat');
                         return chatAgent ? chatAgent.id : agentClients[0].id;
                     });
@@ -194,7 +198,12 @@ export const AIChatApp: React.FC = () => {
                         return merged.length > prev.length ? merged : prev;
                     });
                     setDirectMode(false);
-                    setSelectedAgent(prev => prev || rosterAgents[0].id);
+                    setSelectedAgent(prev => {
+                        if (prev) return prev;
+                        const preferred = getSetting('defaultPersona');
+                        const preferredAgent = preferred && rosterAgents.find(a => a.id === preferred);
+                        return preferredAgent ? preferredAgent.id : rosterAgents[0].id;
+                    });
                 }
             }
 
