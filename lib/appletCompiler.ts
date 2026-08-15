@@ -33,18 +33,35 @@ const IMPORT_STATEMENT_RE = /^[ \t]*import\s+[\s\S]*?from\s+['"][^'"]+['"];?[ \t
 // expression position (and keeps its name for stack traces/DevTools).
 const EXPORT_DEFAULT_RE = /export\s+default\s+/;
 
-/** Shared compile step: strip imports, rebind the default export to `bindingName`, transform JSX/TS. Throws with a message safe to surface to whoever wrote the source (human or agent). */
-function compileSource(source: string, bindingName: string): string {
+/**
+ * Shared compile step: strip imports, rebind a default export to
+ * `bindingName` if one exists, transform JSX/TS. Throws with a message
+ * safe to surface to whoever wrote the source (human or agent).
+ *
+ * `requireDefaultExport` distinguishes the two callers' actual needs:
+ * compileApplet truly needs a component reference to render, so a missing
+ * export is a real error there. compileExecBody doesn't — agent-generated
+ * code frequently skips `export default` even when told to use it
+ * (confirmed live: a smaller model asked for a computed result wrote a
+ * bare `const result = ...` with no export at all), and that's a
+ * completely reasonable, working script — it just returns via its own
+ * `return` statement instead of an exported value. Rejecting that outright
+ * fought the model instead of accepting what it actually produced.
+ */
+function compileSource(source: string, bindingName: string, requireDefaultExport: boolean): string {
   if (!source || !source.trim()) {
     throw new Error('Nothing to compile — the source is empty.');
   }
 
   const withoutImports = source.replace(IMPORT_STATEMENT_RE, '');
+  const hasDefaultExport = EXPORT_DEFAULT_RE.test(withoutImports);
 
-  if (!EXPORT_DEFAULT_RE.test(withoutImports)) {
+  if (!hasDefaultExport && requireDefaultExport) {
     throw new Error('No default export found. Add `export default ...`.');
   }
-  const rebound = withoutImports.replace(EXPORT_DEFAULT_RE, `const ${bindingName} = `);
+  const rebound = hasDefaultExport
+    ? withoutImports.replace(EXPORT_DEFAULT_RE, `const ${bindingName} = `)
+    : withoutImports;
 
   let transformed: string;
   try {
@@ -67,10 +84,18 @@ function compileSource(source: string, bindingName: string): string {
 }
 
 export function compileApplet(source: string): CompileResult {
-  return { code: compileSource(source, 'KernosDynamicApplet') };
+  return { code: compileSource(source, 'KernosDynamicApplet', true) };
 }
 
-/** For lib/kernosExec.ts — same compile step, bound to a differently-named export since this isn't a React-component contract. */
+/**
+ * For lib/kernosExec.ts — same compile step, bound to a differently-named
+ * export since this isn't a React-component contract, and tolerant of
+ * code with no `export default` at all (see compileSource's doc comment).
+ * Callers must check for the binding's existence with `typeof` before
+ * referencing it directly — referencing a genuinely undeclared identifier
+ * any other way throws a ReferenceError, and this binding may not exist
+ * in the no-default-export case.
+ */
 export function compileExecBody(source: string): string {
-  return compileSource(source, '__kernosExecExport');
+  return compileSource(source, '__kernosExecExport', false);
 }

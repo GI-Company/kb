@@ -117,7 +117,15 @@ export async function runKernosExec(code: string, userId: string, timeoutMs = DE
         if (typeof __kernosExecExport === 'function') {
           return await __kernosExecExport();
         }
-        return __kernosExecExport;
+        if (typeof __kernosExecExport !== 'undefined') {
+          return __kernosExecExport;
+        }
+        // No \`export default\` at all — compileExecBody allows that (unlike
+        // applets, which need a real component reference). The code's own
+        // top-level \`return\`, if it has one, already exited above this
+        // point; if it doesn't, this implicitly returns undefined, not a
+        // ReferenceError — __kernosExecExport is never referenced directly
+        // here, only through the ReferenceError-safe \`typeof\` checks above.
       `
     );
 
