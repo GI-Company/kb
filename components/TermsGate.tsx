@@ -210,17 +210,19 @@ export const TermsGate: React.FC<TermsGateProps> = ({ onAccept }) => {
           </section>
 
           <section>
-            <h3 className="text-white font-semibold mb-1">13. Governing Law</h3>
-            <p className="text-amber-400/70 italic">
-              [Placeholder — specify governing jurisdiction, e.g. "These Terms are governed by the laws of the
-              State of ___, without regard to conflict-of-law principles."]
+            <h3 className="text-white font-semibold mb-1">13. Governing Law and Venue</h3>
+            <p>
+              These Terms shall be governed by and construed in accordance with the laws of the State of Georgia,
+              United States, without regard to its conflict of law provisions. You agree to submit to the
+              exclusive jurisdiction of the state and federal courts located in the State of Georgia for the
+              resolution of any disputes arising out of or relating to these Terms or the Service.
             </p>
           </section>
 
           <section>
             <h3 className="text-white font-semibold mb-1">14. Contact</h3>
-            <p className="text-amber-400/70 italic">
-              [Placeholder — add a real contact email for questions about these Terms.]
+            <p>
+              Questions about these Terms can be sent to: <span className="text-gray-300">g.intel.co@outlook.com</span>
             </p>
           </section>
 

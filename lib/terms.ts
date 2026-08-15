@@ -5,7 +5,7 @@
 // re-acceptance by bumping TERMS_VERSION — a stored acceptance of an
 // older version doesn't count as accepting the new one.
 
-export const TERMS_VERSION = '1';
+export const TERMS_VERSION = '2';
 const STORAGE_KEY = `kernos_terms_accepted_v${TERMS_VERSION}`;
 
 export function hasAcceptedTerms(): boolean {
