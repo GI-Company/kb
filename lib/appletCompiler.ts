@@ -1,20 +1,20 @@
-// Client-side TSX/JSX -> runnable-component compiler for the Editor/CDE's
-// "Launch Applet" feature. No server round-trip — Sucrase transforms
-// JSX/TypeScript syntax entirely in the browser (it's a syntax
-// transformer, not a real module bundler, and needs no runtime helper
-// library — the output is self-contained). components/apps/DynamicApplet.tsx
-// runs the result inside a `new Function('React','Lucide','kernel','console', ...)`
-// sandbox, so this only needs to produce a plain (non-module) script that
-// ends up binding a component to `KernosDynamicApplet` — not real imports,
-// not a real module system.
+// Client-side TSX/JSX -> runnable-code compiler, shared by two callers:
+//  - Editor/CDE's "Launch Applet" (components/apps/DynamicApplet.tsx runs
+//    the result as a React component)
+//  - lib/kernosExec.ts's agent-callable `kernos.exec` tool (runs the
+//    result as a plain value/function, no component contract)
+// No server round-trip — Sucrase transforms JSX/TypeScript syntax
+// entirely in the browser (a syntax transformer, not a real module
+// bundler, and needs no runtime helper library — the output is
+// self-contained).
 //
 // Deliberately scoped to `import ... from 'react'` and
 // `import * as X from 'lucide-react'` (both stripped — React/Lucide are
 // supplied as sandbox globals already) plus a single default export.
 // Anything else imported (relative paths to real project files) is
 // stripped along with everything else and will simply be undefined at
-// runtime — this is a single-file component compiler, not a bundler, and
-// that's a known, deliberate v1 limit rather than an oversight.
+// runtime — this is a single-file compiler, not a bundler, and that's a
+// known, deliberate v1 limit rather than an oversight.
 
 import { transform } from 'sucrase';
 
@@ -29,21 +29,22 @@ const IMPORT_STATEMENT_RE = /^[ \t]*import\s+[\s\S]*?from\s+['"][^'"]+['"];?[ \t
 // `export default function Foo(){}` / `export default class Foo{}` /
 // `export default () => {}` / `export default SomeIdentifier;` all become
 // valid expressions once `export default ` is replaced with `const
-// KernosDynamicApplet = ` — a named function/class declaration is legal
-// JS in expression position (and keeps its name for stack traces/DevTools).
+// <bindingName> = ` — a named function/class declaration is legal JS in
+// expression position (and keeps its name for stack traces/DevTools).
 const EXPORT_DEFAULT_RE = /export\s+default\s+/;
 
-export function compileApplet(source: string): CompileResult {
+/** Shared compile step: strip imports, rebind the default export to `bindingName`, transform JSX/TS. Throws with a message safe to surface to whoever wrote the source (human or agent). */
+function compileSource(source: string, bindingName: string): string {
   if (!source || !source.trim()) {
-    throw new Error('Nothing to compile — the file is empty.');
+    throw new Error('Nothing to compile — the source is empty.');
   }
 
   const withoutImports = source.replace(IMPORT_STATEMENT_RE, '');
 
   if (!EXPORT_DEFAULT_RE.test(withoutImports)) {
-    throw new Error('No default export found. Applets must `export default` a React component.');
+    throw new Error('No default export found. Add `export default ...`.');
   }
-  const rebound = withoutImports.replace(EXPORT_DEFAULT_RE, 'const KernosDynamicApplet = ');
+  const rebound = withoutImports.replace(EXPORT_DEFAULT_RE, `const ${bindingName} = `);
 
   let transformed: string;
   try {
@@ -62,5 +63,14 @@ export function compileApplet(source: string): CompileResult {
   const preamble =
     'const { useState, useEffect, useRef, useCallback, useMemo, useContext, useReducer, useLayoutEffect } = React;\n';
 
-  return { code: preamble + transformed };
+  return preamble + transformed;
+}
+
+export function compileApplet(source: string): CompileResult {
+  return { code: compileSource(source, 'KernosDynamicApplet') };
+}
+
+/** For lib/kernosExec.ts — same compile step, bound to a differently-named export since this isn't a React-component contract. */
+export function compileExecBody(source: string): string {
+  return compileSource(source, '__kernosExecExport');
 }

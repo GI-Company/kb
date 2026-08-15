@@ -6,15 +6,16 @@
 // ARCHITECTURE.md's cuts list) — a failed node just fails here.
 //
 // The part that's new relative to the original design: a node's `command`
-// can be a bnlm.* tool name instead of a shell command, so a workflow can
-// mix regular exec steps with "train a local model" / "generate from it"
-// steps — the Dispatcher persona (lib/agents.ts) is instructed to emit
-// these when planning a goal that calls for one. This is what makes local
-// models composable into automated workflows rather than only reachable
-// from an ad hoc chat message.
+// can be a bnlm.* tool name, or "kernos.exec", instead of a shell command,
+// so a workflow can mix regular exec steps with "train a local model" /
+// "generate from it" / "run this TypeScript" steps — the Dispatcher
+// persona (lib/agents.ts) is instructed to emit these when planning a
+// goal that calls for one. This is what makes local models and
+// arbitrary agent-written logic composable into automated workflows
+// rather than only reachable from an ad hoc chat message.
 
 import { fetchGroqText } from './groqFetch';
-import { runLocalModelTool } from './localModelTools';
+import { runTool } from './kernosTools';
 
 export interface TaskNode {
   id: string;
@@ -70,8 +71,8 @@ export async function planGoal(goal: string): Promise<TaskNode[]> {
 }
 
 async function executeNode(node: TaskNode): Promise<string> {
-  if (node.command.startsWith('bnlm.')) {
-    return runLocalModelTool({ tool: node.command, args: node.args });
+  if (node.command.startsWith('bnlm.') || node.command === 'kernos.exec') {
+    return runTool({ tool: node.command, args: node.args });
   }
   const [cmd, ...args] = node.command.split(' ').filter(Boolean);
   if (!cmd) throw new Error('Empty command');

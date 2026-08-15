@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { kernel } from '../services/kernel';
 import { Envelope } from '../types';
-import { extractToolCall, stripToolBlock, runLocalModelTool } from '../lib/localModelTools';
+import { extractToolCall, stripToolBlock } from '../lib/localModelTools';
+import { runTool } from '../lib/kernosTools';
 import { getCurrentUserId } from '../lib/auth';
 import { trackEvent } from '../lib/analytics';
 import { Bot, Send, Loader2, ChevronDown, ChevronRight, Zap, ImagePlus, Brain, Plus, MessageSquare, Trash2, Clock } from 'lucide-react';
@@ -253,11 +254,11 @@ export const AIChatApp: React.FC = () => {
                             id: Math.random().toString(36),
                             role: 'agent',
                             content,
-                            agentId: 'bnlm-local',
+                            agentId: 'kernos-tool',
                             time: new Date().toLocaleTimeString()
                         }]);
                     };
-                    runLocalModelTool(toolCall)
+                    runTool(toolCall)
                         .then(result => publishResult(`🧠 ${result}`))
                         .catch((err: any) => publishResult(`⚠️ ${err?.message || err}`));
                 }

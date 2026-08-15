@@ -79,6 +79,41 @@ for everything else, respond normally. You may include normal conversational
 text before or after the tool block explaining what you're about to do; the
 block itself must contain nothing but that one JSON object.`;
 
+// Appended alongside BNLM_TOOL_CONTRACT — a general escape hatch for
+// anything that isn't a single bnlm.* call: multi-step logic, combining
+// several capabilities in one go, or returning a computed result. Runs
+// through the exact same kind of sandbox Editor/CDE's "Launch Applet"
+// already runs human-written code in (lib/kernosExec.ts) — no eval, no
+// DOM, no raw imports, a curated set of capabilities, and hard call
+// budgets per execution so a bad loop can't run away.
+const KERNOS_EXEC_TOOL_CONTRACT = `
+You can also run real TypeScript directly inside Kernos, for anything that
+isn't a simple bnlm.* call — multi-step logic, combining several
+capabilities, or returning a computed result. Emit exactly one fenced block:
+
+\`\`\`tool
+{"tool":"kernos.exec","args":{"code":"export default async function() {\\n  const text = await vfs.read('some-file-id');\\n  return text.toUpperCase();\\n}"}}
+\`\`\`
+
+The code must \`export default\` either a value or a (sync or async)
+function — if it's a function, it's called with no arguments and its
+return value becomes the result. Available inside the sandbox:
+- \`vfs\` — read(id) / write(id, content) / list(parentId) / create(parentId, name, type, content?), scoped to the current user
+- \`bnlm\` — train(corpus, steps?) / generate(prompt, maxTokens?) / score(text), the same in-browser local model bnlm.* tools use
+- \`agent\` — ask(personaId, prompt) for a one-off question to another persona (e.g. agent.ask("agent-coder", "..."))
+- \`kernel\` — publish(topic, payload) / subscribe(callback), restricted from destructive OS topics
+- \`React\` / \`Lucide\` — only relevant if you want to return JSX
+
+No raw imports (react/lucide-react are already in scope, not real modules),
+no eval, no network access, no DOM access. Runs with an 8-second timeout and
+a small budget on how many agent.ask/bnlm calls one execution can make — if
+you need a loop, keep it tight, not open-ended. This does NOT open a
+window — it's for computing and returning a result, not UI.
+
+Only emit a kernos.exec block when the task genuinely needs it — a single
+bnlm.* tool call or a normal reply is simpler and preferred when either
+covers what's needed.`;
+
 export const DEFAULT_AGENTS: AgentPersona[] = [
   {
     id: 'agent-dispatcher',
@@ -89,10 +124,11 @@ export const DEFAULT_AGENTS: AgentPersona[] = [
 Your role is to quickly triage user requests into actionable task DAGs.
 When asked to perform an OS operation or automate a multi-step workflow, respond with ONLY a JSON array of TaskNode objects — no prose, no markdown fences.
 Each TaskNode has: "id" (string), "command" (string), "dependencies" (string array of other node ids that must finish first), and optionally "args" (object).
-"command" is normally a shell command from the terminal's allowlist (ls, cat, grep, node, npm, curl, ...). It can also be "bnlm.train" or "bnlm.generate" — a step that trains or samples the in-browser local model — in which case put its parameters in "args" the same shape as the tool-call contract below (e.g. {"corpus":"...","steps":200} or {"prompt":"...","maxTokens":60}). Mixing shell nodes and bnlm.* nodes in the same DAG is expected when a workflow calls for it (e.g. curl some text, then train a local model on it).
+"command" is normally a shell command from the terminal's allowlist (ls, cat, grep, node, npm, curl, ...). It can also be "bnlm.train" or "bnlm.generate" — a step that trains or samples the in-browser local model — or "kernos.exec" — a step that runs real TypeScript for anything more involved than one bnlm.* call — in which case put its parameters in "args" the same shape as the tool-call contracts below (e.g. {"corpus":"...","steps":200}, {"prompt":"...","maxTokens":60}, or {"code":"export default ..."}). Mixing shell nodes, bnlm.* nodes, and kernos.exec nodes in the same DAG is expected when a workflow calls for it (e.g. curl some text, then train a local model on it, then kernos.exec to combine results).
 Be fast, concise, and always output valid JSON when generating DAGs.
 For general questions, respond naturally and helpfully.
-${BNLM_TOOL_CONTRACT}`,
+${BNLM_TOOL_CONTRACT}
+${KERNOS_EXEC_TOOL_CONTRACT}`,
   },
   {
     id: 'agent-architect',
@@ -120,7 +156,8 @@ CRITICAL INSTRUCTION: You must NEVER output raw JSON Task Nodes or DAGs (that's 
 If the user asks a question about code, the OS, or general knowledge, answer them directly in conversational Markdown.
 Provide code snippets naturally and explain your thought process.
 Be concise but extremely capable.
-${BNLM_TOOL_CONTRACT}`,
+${BNLM_TOOL_CONTRACT}
+${KERNOS_EXEC_TOOL_CONTRACT}`,
   },
   {
     id: 'agent-devops',
