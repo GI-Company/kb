@@ -34,7 +34,28 @@ export const EditorApp: React.FC<EditorProps> = (props) => {
     if (props.fileId) {
       vfs.read(props.fileId, userId).then(setContent);
     } else {
-      setContent('// Untitled Buffer\n\nfunction main() {\n  console.log("Hello Kernos");\n}');
+      // Applet-shaped by default (not a plain function) — this is what
+      // "Launch Applet" (below) actually knows how to run: a default-
+      // exported React component. React/lucide-react are provided as
+      // sandbox globals when compiled, not real imports (see
+      // lib/appletCompiler.ts) — these import lines are here for
+      // readability and get stripped at compile time.
+      setContent(
+        "import React, { useState } from 'react';\n" +
+        "import * as Lucide from 'lucide-react';\n\n" +
+        "export default function MyApplet() {\n" +
+        "  const [count, setCount] = useState(0);\n\n" +
+        "  return (\n" +
+        '    <div className="p-4 text-white font-sans flex flex-col items-center justify-center h-full">\n' +
+        '      <Lucide.Sparkles className="text-cyan-400 mb-4" size={32} />\n' +
+        '      <h2 className="text-xl font-bold mb-2">Hello, Kernos!</h2>\n' +
+        '      <button onClick={() => setCount(c => c + 1)} className="px-4 py-2 bg-cyan-500/20 hover:bg-cyan-500/40 text-cyan-300 rounded transition-colors">\n' +
+        '        Clicked {count} times\n' +
+        '      </button>\n' +
+        '    </div>\n' +
+        '  );\n' +
+        '}\n'
+      );
     }
   }, [props.fileId, userId]);
 

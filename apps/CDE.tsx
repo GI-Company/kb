@@ -2,11 +2,12 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { kernel } from '../services/kernel';
 import { vfs } from '../lib/vfs';
 import { getCurrentUserId } from '../lib/auth';
+import { useOS } from '../store';
 import { Envelope } from '../types';
 import {
   FolderOpen, File, ChevronRight, ChevronDown, Save, Sparkles,
   Play, X, Terminal as TerminalIcon, Code2, Brain, Search,
-  FilePlus, FolderPlus, RefreshCw, Loader2, Edit2, Copy, Trash2
+  FilePlus, FolderPlus, RefreshCw, Loader2, Edit2, Copy, Trash2, Rocket
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -142,6 +143,10 @@ export const CDEApp: React.FC = () => {
   const [aiStatus, setAiStatus] = useState<'idle' | 'thinking' | 'streaming'>('idle');
   const [aiMessage, setAiMessage] = useState('');
 
+  // Launch Applet state
+  const [isCompilingApplet, setIsCompilingApplet] = useState(false);
+  const { openWindow } = useOS();
+
   // Terminal panel state
   const [terminalVisible, setTerminalVisible] = useState(true);
   const [terminalInput, setTerminalInput] = useState('');
@@ -248,9 +253,21 @@ export const CDEApp: React.FC = () => {
           ]);
         }
       }
+
+      // Launch Applet — same topics Editor.tsx listens for (services/kernel.ts's
+      // handleAppletCompile, lib/appletCompiler.ts).
+      if (env.topic === 'applet.compile:success') {
+        setIsCompilingApplet(false);
+        const { appletId, code } = env.payload as any;
+        openWindow('applet', `Applet: ${appletId}`, { appletId, sourceCode: code });
+      }
+      if (env.topic === 'applet.compile:error') {
+        setIsCompilingApplet(false);
+        alert(`Compilation Failed:\n\n${(env.payload as any).error}`);
+      }
     });
     return unsub;
-  }, []);
+  }, [openWindow]);
 
   // Auto-scroll terminal
   useEffect(() => {
@@ -333,6 +350,20 @@ export const CDEApp: React.FC = () => {
     kernel.sendToAgent('agent-coder', 'agent.chat', {
       msg: `Review this ${activeTab.language} code for bugs, performance, and best practices. Be concise:\n\n\`\`\`${activeTab.language}\n${activeTab.content}\n\`\`\``
     });
+  };
+
+  // ── Launch Applet — compiles the active file's TSX/JSX (client-side,
+  // lib/appletCompiler.ts) and runs it live in a sandboxed window. Same
+  // pipeline as Editor.tsx's "Launch Applet", now available from CDE too. ──
+  const handleLaunchApplet = () => {
+    if (!activeTab) return;
+    if (!activeTab.content.includes('export default')) {
+      alert('Applets must export a default React component.');
+      return;
+    }
+    setIsCompilingApplet(true);
+    const appletId = activeTab.name.replace(/\.(tsx|jsx|ts|js)$/, '');
+    kernel.publish('applet.compile', { appletId, code: activeTab.content });
   };
 
   // ── Terminal (enhanced) ──
@@ -424,6 +455,17 @@ export const CDEApp: React.FC = () => {
         <motion.button data-tour="cde-ai-review" whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={handleAiReview} className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-purple-500/15 hover:bg-purple-500/25 border border-purple-500/30 text-purple-400 text-[10px] font-bold transition-all shadow-[0_0_10px_rgba(168,85,247,0.1)]" title="AI Code Review">
           <Brain size={12} />
           <span>AI REVIEW</span>
+        </motion.button>
+        <motion.button
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={handleLaunchApplet}
+          disabled={isCompilingApplet || !activeTab}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-green-500/15 hover:bg-green-500/25 border border-green-500/30 text-green-400 text-[10px] font-bold transition-all shadow-[0_0_10px_rgba(34,197,94,0.1)] disabled:opacity-40"
+          title="Compile and run this file as a live applet"
+        >
+          {isCompilingApplet ? <Loader2 size={12} className="animate-spin" /> : <Rocket size={12} />}
+          <span>LAUNCH</span>
         </motion.button>
         <div className="w-px h-5 bg-white/10 mx-1" />
         <motion.button data-tour="cde-terminal-toggle" whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={() => setTerminalVisible(prev => !prev)} className={`p-1.5 rounded-md hover:bg-white/10 transition-all ${terminalVisible ? 'text-cyan-400 bg-cyan-500/10 shadow-[0_0_10px_rgba(0,240,255,0.1)]' : 'text-gray-400'}`} title="Toggle Terminal">

@@ -3,6 +3,7 @@ import { DEFAULT_AGENTS } from '../lib/agents';
 import { chatStore } from '../lib/chatStore';
 import { getDemoPipeline, planGoal, runTaskGraph, TaskNode } from '../lib/taskEngine';
 import { supabase } from '../lib/supabaseClient';
+import { compileApplet } from '../lib/appletCompiler';
 
 type BusListener = (envelope: Envelope) => void;
 
@@ -312,19 +313,30 @@ class Kernel {
     this.broadcast({ topic: 'task.done', from: 'kernel', payload: { runId }, time: now() });
   }
 
+  // Compiles entirely client-side (lib/appletCompiler.ts, Sucrase) — no
+  // server round-trip, matching the original Go backend's applet_engine.go
+  // in spirit (dynamic TSX -> runnable component) but running in-browser.
+  // Success/error topics match what Editor.tsx (and now CDE.tsx) already
+  // listen for.
   private handleAppletCompile(env: Envelope) {
-    // The dynamic TSX->JS applet compiler lived in the Go backend
-    // (applet_engine.go) and has no client-side equivalent in this build —
-    // fail fast with a clear error instead of leaving callers (Editor.tsx's
-    // "Launch Applet", Desktop.tsx's shortcut launcher) spinning forever.
-    const payload = env.payload as { appletId?: string };
+    const payload = env.payload as { appletId?: string; code?: string };
     setTimeout(() => {
-      this.broadcast({
-        topic: 'applet.compile:error',
-        from: 'kernel',
-        payload: { appletId: payload.appletId, error: 'Dynamic applet compilation is not available in this build (no server-side compiler).' },
-        time: now(),
-      });
+      try {
+        const { code } = compileApplet(payload.code || '');
+        this.broadcast({
+          topic: 'applet.compile:success',
+          from: 'kernel',
+          payload: { appletId: payload.appletId, code },
+          time: now(),
+        });
+      } catch (err: any) {
+        this.broadcast({
+          topic: 'applet.compile:error',
+          from: 'kernel',
+          payload: { appletId: payload.appletId, error: err?.message || String(err) },
+          time: now(),
+        });
+      }
     }, 0);
   }
 
