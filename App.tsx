@@ -25,6 +25,8 @@ import { CinematicBoot } from './components/ui/CinematicBoot';
 import { ContextMenuProvider } from './components/ui/ContextMenu';
 import { Walkthrough, WALKTHROUGH_SEEN_KEY } from './components/ui/Walkthrough';
 import { FeatureTour } from './components/ui/FeatureTour';
+import { TermsGate } from './components/TermsGate';
+import { hasAcceptedTerms } from './lib/terms';
 import { kernel } from './services/kernel';
 import { AppUser, getSession, createGuestUser } from './lib/auth';
 import { identifyUser } from './lib/analytics';
@@ -39,6 +41,9 @@ const App: React.FC = () => {
   const [bootLines, setBootLines] = useState<string[]>([]);
   const [user, setUser] = useState<AppUser | null>(null);
   const [biosRequested, setBiosRequested] = useState(false);
+  // Gated before the desktop for both guests and signed-in accounts —
+  // see components/TermsGate.tsx and lib/terms.ts.
+  const [termsAccepted, setTermsAccepted] = useState(hasAcceptedTerms);
 
   // Listen for right-click during boot to enter BIOS
   useEffect(() => {
@@ -189,6 +194,13 @@ const App: React.FC = () => {
   // ─── LOGIN SCREEN ───
   if (phase === 'login') {
     return <LoginScreen onLogin={handleLogin} onGuestAccess={handleGuestAccess} />;
+  }
+
+  // ─── TERMS OF SERVICE GATE ─── blocks the desktop for guests and
+  // signed-in accounts alike until accepted, every time phase is about to
+  // become 'desktop' and no prior acceptance is on record.
+  if (phase === 'desktop' && !termsAccepted) {
+    return <TermsGate onAccept={() => setTermsAccepted(true)} />;
   }
 
   // ─── DESKTOP ───

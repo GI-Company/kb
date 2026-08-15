@@ -165,6 +165,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onGuestAccess
         </div>
 
         <p className="text-[10px] text-gray-700 mt-4">Kernos + BNLM — Cloud reasoning, local execution.</p>
+        <p className="text-[9px] text-gray-800 mt-1 tracking-wide">A GI-Company Product</p>
       </div>
 
       <style>{`
