@@ -66,12 +66,28 @@ class Kernel {
 
   private broadcast(envelope: Envelope) {
     this.log(envelope);
+    this.notify(envelope);
+  }
+
+  /** Delivers to subscribers without logging — for envelopes publish()/sendToAgent() already logged. */
+  private notify(envelope: Envelope) {
     this.listeners.forEach(l => l(envelope));
   }
 
   // ── Routing ──────────────────────────────────────────────────────────
 
   private route(env: Envelope) {
+    // Subscribers see outgoing envelopes too, not just the responses they
+    // produce. Previously anything with a handler below returned before
+    // reaching the catch-all broadcast, so `agent.chat`, `ai.chat`,
+    // `vm.spawn` and `task.run` were visible in getTrafficLog() but never
+    // delivered live to a subscriber — which made "who asked for this?"
+    // underivable from the bus (apps/AgentMonitor.tsx needs exactly that,
+    // and apps/TimelineSlider.tsx already listed vm.spawn as a tracked
+    // topic that could never actually fire). Nothing else keys off these
+    // request topics, so this only adds visibility.
+    this.notify(env);
+
     if (env.topic === 'agent.roster') return this.handleAgentRoster(env);
     if (env.topic === 'agent.chat' && env.to) return void this.handleAgentChat(env);
     if (env.topic === 'ai.chat') return void this.handleDirectChat(env);
@@ -83,12 +99,13 @@ class Kernel {
     if (env.topic === 'applet.compile') return this.handleAppletCompile(env);
     if (env.topic === 'task.run') return void this.handleTaskRun(env);
 
-    // Everything else (bios.*, p2p.*, pkg.*, vfs:*, sys.config:*, sys.ps,
-    // editor.typing, terminal.typing, ...) has no backend anymore in v1 —
-    // broadcast locally so listeners still see their own echo instead of
-    // silently hanging. vfs:read/write/create in particular are handled by
-    // lib/vfs.ts directly inside the apps that need them, not over the bus.
-    this.broadcast(env);
+    // Everything else (bios.*, p2p.*, pkg.*, vfs:*, sys.ps, editor.typing,
+    // terminal.typing, ...) has no backend anymore in v1 — the notify()
+    // above already delivered the local echo, so listeners see their own
+    // message instead of silently hanging. vfs:read/write/create in
+    // particular are handled by lib/vfs.ts directly inside the apps that
+    // need them, not over the bus; user preferences that used to ride
+    // sys.config:* now live in lib/settings.ts, off the bus entirely.
   }
 
   private handleAgentRoster(env: Envelope) {

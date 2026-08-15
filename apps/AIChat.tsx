@@ -267,9 +267,21 @@ export const AIChatApp: React.FC = () => {
                             time: new Date().toLocaleTimeString()
                         }]);
                     };
+                    // Announced on the bus so apps/AgentMonitor.tsx can show
+                    // which persona invoked which tool — tool runs are a real
+                    // part of agent activity, and without these they'd be
+                    // invisible to anything outside this component.
+                    kernel.publish('agent.tool:start', { agentId, tool: toolCall.tool });
                     runTool(toolCall)
-                        .then(result => publishResult(`🧠 ${result}`))
-                        .catch((err: any) => publishResult(`⚠️ ${err?.message || err}`));
+                        .then(result => {
+                            kernel.publish('agent.tool:done', { agentId, tool: toolCall.tool });
+                            publishResult(`🧠 ${result}`);
+                        })
+                        .catch((err: any) => {
+                            const message = err?.message || String(err);
+                            kernel.publish('agent.tool:error', { agentId, tool: toolCall.tool, error: message });
+                            publishResult(`⚠️ ${message}`);
+                        });
                 }
                 setStreamBuffer('');
                 setIsWaiting(false);
