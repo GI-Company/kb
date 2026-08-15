@@ -66,6 +66,19 @@ export interface TrainResult {
 export interface GenerateResult {
   text: string;
   tokensGenerated: number;
+  /** What the caller asked for, before any context-window cap was applied. */
+  requestedTokens: number;
+  /**
+   * Set when the attention mixer's context window cut the request short.
+   * The engine only console.warn'd about this, so asking for 200 tokens and
+   * silently getting 32 looked like a hardcoded limit rather than
+   * `contextLen - promptLength`. Callers surface this to the user.
+   */
+  cappedBy?: {
+    limit: number;
+    contextLen: number;
+    promptTokens: number;
+  };
 }
 
 export interface ScoreResult {
@@ -225,6 +238,19 @@ class LocalModelService {
     // down to what the tokenizer actually knows first.
     const safePrompt = this.filterToVocab(prompt) || this.tokenizer.itos[0];
     const promptIds = this.tokenizer.encode(safePrompt);
+
+    // Mirror the engine's own cap (src/bnlm/model.js's generateWithCache) so
+    // it can be reported rather than only console.warn'd. Only the attention
+    // mixer is bounded: it uses learned *absolute* positional embeddings, so
+    // prompt + generated can't exceed contextLen. The linear and rwkv mixers
+    // generate recurrently and have no such limit.
+    const contextLen = this.config.contextLen;
+    const isBounded = this.config.mixerType === 'attention' && promptIds.length < contextLen;
+    const effectiveMax = isBounded ? Math.min(maxNewTokens, contextLen - promptIds.length) : maxNewTokens;
+    const cappedBy = effectiveMax < maxNewTokens
+      ? { limit: effectiveMax, contextLen, promptTokens: promptIds.length }
+      : undefined;
+
     const generatedIds: number[] = await this.model.generate(promptIds, maxNewTokens, opts);
     const text = this.tokenizer.decode(generatedIds);
 
@@ -235,7 +261,7 @@ class LocalModelService {
       output: text,
     });
 
-    return { text, tokensGenerated: generatedIds.length };
+    return { text, tokensGenerated: generatedIds.length, requestedTokens: maxNewTokens, cappedBy };
   }
 
   /**

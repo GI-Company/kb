@@ -43,8 +43,16 @@ export async function runLocalModelTool(toolCall: ToolCall): Promise<string> {
     const { prompt = '', maxTokens = 60 } = toolCall.args || {};
     if (!localModel.isReady) throw new Error('No local model has been trained yet in this tab — train one first.');
     const clampedTokens = Math.min(Math.max(Math.round(Number(maxTokens) || 60), 1), 300);
-    const { text } = await localModel.generate(String(prompt), clampedTokens);
-    return `Local model output:\n\n${text}`;
+    const { text, cappedBy } = await localModel.generate(String(prompt), clampedTokens);
+    // Say so when the context window shortened the output, so the agent (and
+    // the user reading the thread) isn't left thinking generation is stuck at
+    // some fixed length.
+    const note = cappedBy
+      ? `\n\n(Output capped at ${cappedBy.limit} tokens: the attention mixer's context window is ` +
+        `${cappedBy.contextLen} and the prompt used ${cappedBy.promptTokens}. Retrain with a larger ` +
+        `context length, or with the "linear" or "rwkv" mixer, for unbounded generation.)`
+      : '';
+    return `Local model output:\n\n${text}${note}`;
   }
 
   if (toolCall.tool === 'bnlm.score') {

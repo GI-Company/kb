@@ -136,7 +136,20 @@ export const LocalModelApp: React.FC = () => {
     try {
       const result = await localModel.generate(prompt, maxTokens);
       setGenerated(result.text);
-      log(`Generated ${result.tokensGenerated} tokens.`, 'success');
+      if (result.cappedBy) {
+        // The engine only console.warn'd this, which made a request for
+        // e.g. 200 tokens silently return contextLen-minus-prompt instead
+        // and read as a fixed generation limit.
+        log(
+          `Generated ${result.tokensGenerated} tokens — capped at ${result.cappedBy.limit} of the ` +
+          `${result.requestedTokens} requested. The attention mixer can't exceed its context window ` +
+          `(${result.cappedBy.contextLen}), and the prompt used ${result.cappedBy.promptTokens} of it. ` +
+          `Raise Context Length, shorten the prompt, or switch the mixer to linear/rwkv for unbounded generation.`,
+          'error'
+        );
+      } else {
+        log(`Generated ${result.tokensGenerated} tokens.`, 'success');
+      }
       trackEvent('local_model_generated', { mixer_type: mixerType, tokens: result.tokensGenerated });
       refreshHistory();
     } catch (err: any) {
