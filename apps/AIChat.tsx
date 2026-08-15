@@ -6,6 +6,7 @@ import { runTool } from '../lib/kernosTools';
 import { getCurrentUserId } from '../lib/auth';
 import { trackEvent } from '../lib/analytics';
 import { getSetting } from '../lib/settings';
+import { extractThinking } from '../lib/thinking';
 import { Bot, Send, Loader2, ChevronDown, ChevronRight, Zap, ImagePlus, Brain, Plus, MessageSquare, Trash2, Clock } from 'lucide-react';
 
 interface ChatMessage {
@@ -29,25 +30,6 @@ interface ConversationMeta {
     title: string;
     agent_id: string;
     updated_at: string;
-}
-
-// Extract thinking and response as separate parts
-function extractThinking(text: string): { thinking: string; response: string } {
-    let thinking = '';
-    let response = text;
-    const thinkMatches = text.match(/<think>([\s\S]*?)<\/think>/g);
-    if (thinkMatches) {
-        thinking = thinkMatches
-            .map(m => m.replace(/<\/?think>/g, '').trim())
-            .join('\n\n');
-        response = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-    }
-    const unclosed = response.match(/<think>([\s\S]*)$/);
-    if (unclosed) {
-        thinking += (thinking ? '\n\n' : '') + unclosed[1].trim();
-        response = response.replace(/<think>[\s\S]*$/, '').trim();
-    }
-    return { thinking, response };
 }
 
 // Collapsible thinking block component
@@ -89,6 +71,11 @@ export const AIChatApp: React.FC = () => {
     // handler below — see the 'agent.chat:reply' case for why this matters.
     const streamBufferRef = useRef('');
     useEffect(() => { streamBufferRef.current = streamBuffer; }, [streamBuffer]);
+    // The _request_id of this window's own in-flight direct-mode request.
+    // ai.chat/ai.stream/ai.done are shared topics — MultiAgentWorkspace runs
+    // several concurrent requests on them — so chunks have to be matched
+    // back to the request that asked for them rather than assumed to be ours.
+    const directRequestIdRef = useRef<string | null>(null);
     const bottomRef = useRef<HTMLDivElement>(null);
     const agentCheckTimer = useRef<ReturnType<typeof setTimeout>>();
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -294,12 +281,22 @@ export const AIChatApp: React.FC = () => {
                 setIsWaiting(false);
             }
 
+            // ai.stream/ai.done are shared with MultiAgentWorkspace's panes,
+            // which run several concurrent requests. Only take chunks for
+            // this window's own request — a missing _request_id is treated as
+            // ours so any caller that doesn't set one still works.
+            const isOwnDirectRequest = (payload: any) =>
+                !payload?._request_id || payload._request_id === directRequestIdRef.current;
+
             if (env.topic === 'ai.stream') {
+                if (!isOwnDirectRequest(env.payload)) return;
                 setStreamBuffer(prev => prev + (env.payload.chunk || ''));
                 setIsWaiting(false);
             }
 
             if (env.topic === 'ai.done') {
+                if (!isOwnDirectRequest(env.payload)) return;
+                directRequestIdRef.current = null;
                 // Same fix as 'agent.chat:reply' above — read via the ref
                 // instead of nesting setMessages inside a setStreamBuffer updater.
                 const prev = streamBufferRef.current;
@@ -357,6 +354,11 @@ export const AIChatApp: React.FC = () => {
 
         if (directMode) {
             const reqId = Math.random().toString(36).substring(7);
+            // Remembered so the ai.stream/ai.done handlers can ignore
+            // traffic belonging to somebody else's request — MultiAgentWorkspace
+            // fans several concurrent ai.chat calls out on this same topic,
+            // and without this filter their chunks land in this thread.
+            directRequestIdRef.current = reqId;
             if (imageBase64) {
                 kernel.publish('ai.chat', { _request_id: reqId, prompt: msg, image: imageBase64 });
             } else {

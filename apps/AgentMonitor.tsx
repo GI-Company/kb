@@ -126,10 +126,13 @@ export const AgentMonitorApp: React.FC = () => {
         pushFeed(env.to, 'request', String(p?.msg ?? '').slice(0, 70) || '(no text)', at);
       }
 
-      // Direct mode bypasses the roster and always hits agent-chat.
+      // ai.chat carries its target in `to` when one was named (that's how
+      // MultiAgentWorkspace addresses a specific persona); AIChat's direct
+      // mode omits it, which kernel.ts resolves to agent-chat.
       if (env.topic === 'ai.chat') {
-        update('agent-chat', a => ({ ...a, status: 'streaming', requests: a.requests + 1, pendingSince: at }), at);
-        pushFeed('agent-chat', 'request', String(p?.prompt ?? '').slice(0, 70) || '(no text)', at);
+        const target = env.to || 'agent-chat';
+        update(target, a => ({ ...a, status: 'streaming', requests: a.requests + 1, pendingSince: at }), at);
+        pushFeed(target, 'request', String(p?.prompt ?? '').slice(0, 70) || '(no text)', at);
       }
 
       if (env.topic === 'agent.chat:stream' && env.from) {
@@ -137,9 +140,12 @@ export const AgentMonitorApp: React.FC = () => {
         update(env.from, a => ({ ...a, status: 'streaming', charsStreamed: a.charsStreamed + chunk.length }), at);
       }
 
-      if (env.topic === 'ai.stream') {
+      // kernel.ts sets `from` to the persona that produced the chunk, so
+      // concurrent requests to different personas (MultiAgentWorkspace) are
+      // attributed correctly instead of all landing on agent-chat.
+      if (env.topic === 'ai.stream' && env.from) {
         const chunk = String(p?.chunk ?? '');
-        update('agent-chat', a => ({ ...a, status: 'streaming', charsStreamed: a.charsStreamed + chunk.length }), at);
+        update(env.from, a => ({ ...a, status: 'streaming', charsStreamed: a.charsStreamed + chunk.length }), at);
       }
 
       if (env.topic === 'agent.chat:reply' && env.from) {
@@ -161,8 +167,8 @@ export const AgentMonitorApp: React.FC = () => {
         pushFeed(env.from, failed ? 'error' : 'reply', reply.replace(/^⚠️\s*/, '').slice(0, 70), at);
       }
 
-      if (env.topic === 'ai.done') {
-        update('agent-chat', a => ({
+      if (env.topic === 'ai.done' && env.from) {
+        update(env.from, a => ({
           ...a,
           status: 'idle',
           replies: a.replies + 1,

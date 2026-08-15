@@ -141,20 +141,38 @@ class Kernel {
     });
   }
 
+  /**
+   * `ai.chat` — a one-shot prompt with no conversation history, used by
+   * AIChat's direct mode and by MultiAgentWorkspace's panes.
+   *
+   * Two things here are load-bearing for any caller running more than one
+   * of these at once:
+   *  - `env.to` selects the persona. This used to be hardcoded to
+   *    agent-chat, so a workspace fanning one goal out to four specialist
+   *    personas silently got four identical answers from the same one.
+   *  - `_request_id` is echoed back on every ai.stream/ai.done. Without it
+   *    a caller can't tell which of its own in-flight requests a chunk
+   *    belongs to, and concurrent requests interleave into one stream.
+   * `from` carries the persona too, so subscribers (apps/AgentMonitor.tsx)
+   * can attribute activity without parsing the request id.
+   */
   private async handleDirectChat(env: Envelope) {
-    const payload = env.payload as { prompt: string; image?: string };
+    const payload = env.payload as { _request_id?: string; prompt: string; image?: string };
+    const agentId = env.to || 'agent-chat';
+    const _request_id = payload._request_id;
     try {
       const { error } = await this.streamChatChunks(
-        { agentId: 'agent-chat', message: payload.prompt, image: payload.image },
-        (chunk) => this.broadcast({ topic: 'ai.stream', from: 'kernel', payload: { chunk }, time: now() })
+        { agentId, message: payload.prompt, image: payload.image },
+        (chunk) => this.broadcast({ topic: 'ai.stream', from: agentId, payload: { _request_id, chunk }, time: now() })
       );
       if (error) {
-        this.broadcast({ topic: 'ai.stream', from: 'kernel', payload: { chunk: `⚠️ ${error}` }, time: now() });
+        this.broadcast({ topic: 'ai.stream', from: agentId, payload: { _request_id, chunk: `⚠️ ${error}`, error }, time: now() });
       }
     } catch (err: any) {
-      this.broadcast({ topic: 'ai.stream', from: 'kernel', payload: { chunk: `⚠️ Failed to reach the model: ${err?.message || err}` }, time: now() });
+      const message = `Failed to reach the model: ${err?.message || err}`;
+      this.broadcast({ topic: 'ai.stream', from: agentId, payload: { _request_id, chunk: `⚠️ ${message}`, error: message }, time: now() });
     } finally {
-      this.broadcast({ topic: 'ai.done', from: 'kernel', payload: {}, time: now() });
+      this.broadcast({ topic: 'ai.done', from: agentId, payload: { _request_id }, time: now() });
     }
   }
 
