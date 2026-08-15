@@ -27,6 +27,12 @@ export interface ConversationMeta {
   updated_at: string;
 }
 
+/** Aggregate counts for apps/SystemMetrics.tsx — avoids load()ing every conversation just to total its messages. */
+export interface ChatStats {
+  conversationCount: number;
+  messageCount: number;
+}
+
 interface ChatMessageLike {
   id?: string;
   role: 'user' | 'agent';
@@ -83,6 +89,14 @@ const localBackend = {
     const all = readAllLocal();
     delete all[id];
     writeAllLocal(all);
+  },
+
+  async stat(userId: string): Promise<ChatStats> {
+    const mine = Object.values(readAllLocal()).filter(c => c.user_id === userId);
+    return {
+      conversationCount: mine.length,
+      messageCount: mine.reduce((sum, c) => sum + (c.messages?.length ?? 0), 0),
+    };
   },
 };
 
@@ -167,6 +181,27 @@ const supabaseBackend = {
     const { error } = await supabase!.from('conversations').delete().eq('id', id);
     if (error) throw error;
   },
+
+  // Two count-only queries (head: true fetches no rows) rather than
+  // load()ing every conversation with its full message array.
+  async stat(userId: string): Promise<ChatStats> {
+    const { data: convIds, error: convErr } = await supabase!
+      .from('conversations')
+      .select('id')
+      .eq('user_id', userId);
+    if (convErr) throw convErr;
+
+    const ids = (convIds ?? []).map(c => c.id);
+    if (ids.length === 0) return { conversationCount: 0, messageCount: 0 };
+
+    const { count, error: msgErr } = await supabase!
+      .from('messages')
+      .select('id', { count: 'exact', head: true })
+      .in('conversation_id', ids);
+    if (msgErr) throw msgErr;
+
+    return { conversationCount: ids.length, messageCount: count ?? 0 };
+  },
 };
 
 export const chatStore = {
@@ -181,5 +216,8 @@ export const chatStore = {
   },
   delete(id: string, userId: string): Promise<void> {
     return (isGuestId(userId) ? localBackend : supabaseBackend).delete(id);
+  },
+  stat(userId: string): Promise<ChatStats> {
+    return (isGuestId(userId) ? localBackend : supabaseBackend).stat(userId);
   },
 };

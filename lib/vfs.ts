@@ -31,6 +31,13 @@ interface VfsState {
   nodes: Record<string, FileNode>;
 }
 
+/** Aggregate counts for apps/SystemMetrics.tsx — cheaper and more accurate than having a caller recursively walk the tree via list(). */
+export interface VfsStats {
+  fileCount: number;
+  dirCount: number;
+  totalBytes: number;
+}
+
 function seedInitialState(): VfsState {
   const home: FileNode = { id: ROOT_SENTINEL, name: 'home', type: 'directory', children: [], parentId: null };
   return { nodes: { [ROOT_SENTINEL]: home } };
@@ -108,6 +115,22 @@ const localBackend = {
     state.nodes[id] = { ...state.nodes[id], name: newName };
     writeLocalState(state);
     return true;
+  },
+
+  async stat(): Promise<VfsStats> {
+    const nodes = Object.values(readLocalState().nodes);
+    let fileCount = 0;
+    let dirCount = 0;
+    let totalBytes = 0;
+    for (const n of nodes) {
+      if (n.id === ROOT_SENTINEL) continue; // the root itself isn't a user-created node
+      if (n.type === 'directory') dirCount++;
+      else {
+        fileCount++;
+        totalBytes += n.content?.length ?? 0;
+      }
+    }
+    return { fileCount, dirCount, totalBytes };
   },
 
   async remove(id: string): Promise<boolean> {
@@ -195,6 +218,27 @@ const supabaseBackend = {
     const { error } = await supabase!.from('vfs_nodes').delete().eq('id', id).eq('user_id', userId);
     return !error;
   },
+
+  // One query for the whole tree rather than a recursive per-directory
+  // walk. It does pull `content` back to total the bytes, which supabase-js
+  // can't sum server-side without a dedicated RPC — acceptable here because
+  // this is one personal file tree, not a shared corpus, and the panel that
+  // calls it refreshes on a slow interval.
+  async stat(userId: string): Promise<VfsStats> {
+    const { data, error } = await supabase!.from('vfs_nodes').select('type,content').eq('user_id', userId);
+    if (error) throw error;
+    let fileCount = 0;
+    let dirCount = 0;
+    let totalBytes = 0;
+    for (const r of data ?? []) {
+      if (r.type === 'directory') dirCount++;
+      else {
+        fileCount++;
+        totalBytes += (r.content as string | null)?.length ?? 0;
+      }
+    }
+    return { fileCount, dirCount, totalBytes };
+  },
 };
 
 export const vfs = {
@@ -215,5 +259,8 @@ export const vfs = {
   },
   remove(id: string, userId: string): Promise<boolean> {
     return (isGuestId(userId) ? localBackend.remove(id) : supabaseBackend.remove(id, userId));
+  },
+  stat(userId: string): Promise<VfsStats> {
+    return (isGuestId(userId) ? localBackend.stat() : supabaseBackend.stat(userId));
   },
 };
