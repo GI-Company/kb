@@ -131,6 +131,25 @@ denying camera/mic/geolocation/payment/USB, and a CSP.
 > key* in production is treated differently and fails closed, because that
 > is a misconfiguration rather than an outage.
 
+## Dependencies
+
+`.github/workflows/ci.yml` runs typecheck, tests, build, and `npm audit` on
+every push and pull request, plus weekly on a schedule — a vulnerability can
+be disclosed against code that hasn't changed, which a push-only trigger
+would never notice.
+
+The audit gate fails on **high and critical** only. Moderate advisories are
+reported but don't block: a moderate in a dev-only transitive dependency
+would fail every PR without describing real exposure for a browser app, and
+a check that always fails gets ignored — at which point the real one is
+missed too.
+
+Dependabot (`.github/dependabot.yml`) opens weekly npm PRs with minor and
+patch bumps grouped into one, majors kept separate because those are the
+ones needing review.
+
+Current state: **0 known vulnerabilities**.
+
 ## Reporting
 
 Email **g.intel.co@outlook.com** with steps to reproduce. This is a personal

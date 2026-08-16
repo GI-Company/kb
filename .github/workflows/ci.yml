@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly, because a vulnerability can be disclosed against code that
+  # hasn't changed — a push-only trigger would never notice.
+  schedule:
+    - cron: '0 6 * * 1'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Fails on high/critical only. Moderate advisories in a dev-only
+      # transitive dependency would block every PR without describing real
+      # exposure for a browser app with no server-side user input path —
+      # a check that always fails gets ignored, and then the real one is
+      # missed too.
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+
+      # Reported but never fatal, so the moderates stay visible without
+      # blocking.
+      - name: Full advisory report
+        if: always()
+        run: npm audit || true
