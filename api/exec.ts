@@ -88,7 +88,10 @@ export default async function handler(req: any, res: any) {
   if (cmd === 'help') {
     res.status(200).json({
       stdout:
-        `Available commands: ${[...ALLOWED_COMMANDS].sort().join(', ')}\n\n` +
+        `Filesystem (persistent, runs in your browser against your files):\n` +
+        `  ls, cat, cd, pwd, mkdir, touch, write, rm, mv, cp\n\n` +
+        `Sandboxed commands (fresh temp dir per run, nothing persists):\n` +
+        `  ${[...ALLOWED_COMMANDS].sort().join(', ')}\n\n` +
         `Network commands (signed-in accounts only):\n` +
         // Same strings the failure messages use, so help and errors can't
         // describe the command differently.

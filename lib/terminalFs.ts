@@ -1,0 +1,289 @@
+// Filesystem commands backed by the real VFS (lib/vfs.ts) instead of the
+// server's throwaway jail.
+//
+// WHY THIS EXISTS: /api/exec runs each command in a fresh mkdtemp directory
+// that is destroyed the moment it returns. So `mkdir` and `touch` were in
+// the allowlist but useless — you could create a file and it was gone
+// before you could `cat` it, and there was no `cd` at all. Meanwhile this
+// app already has a persistent, per-user, Supabase-backed filesystem that
+// the terminal never touched.
+//
+// Running these client-side is both more capable and more secure:
+//   - Persistent, and synced across devices for signed-in accounts.
+//   - Instant; no network round trip for `ls`.
+//   - Scoped to the calling user by lib/vfs.ts.
+//   - These commands stop reaching execFile entirely, so the server's
+//     attack surface shrinks rather than grows.
+//
+// CWD is a breadcrumb stack, not a node id. `..` needs a parent, and the
+// Supabase backend's list() doesn't return parent_id (the tree is
+// represented relationally there, unlike the localStorage backend). A stack
+// makes `..` a pop and behaves identically on both backends.
+
+import { vfs } from './vfs';
+import { FileNode } from '../types';
+
+export interface CommandResult {
+  stdout: string;
+  stderr: string;
+  code: number;
+}
+
+/** Path from the root to the current directory. Empty = at the root. */
+export type Cwd = { id: string; name: string }[];
+
+const ROOT_ID = 'home';
+
+export const ROOT_CWD: Cwd = [];
+
+export function cwdPath(cwd: Cwd): string {
+  return '/' + cwd.map(c => c.name).join('/');
+}
+
+function dirId(cwd: Cwd): string {
+  return cwd.length ? cwd[cwd.length - 1].id : ROOT_ID;
+}
+
+function ok(stdout = ''): CommandResult {
+  return { stdout, stderr: '', code: 0 };
+}
+
+function err(command: string, message: string, code = 1): CommandResult {
+  return { stdout: '', stderr: `${command}: ${message}\n`, code };
+}
+
+/**
+ * Walks a path to the directory it names. Returns the new breadcrumb stack,
+ * or a string describing why it couldn't.
+ *
+ * Handles `/abs`, `rel`, `.`, `..`, and trailing slashes. `..` at the root
+ * stays at the root, matching how a real shell behaves rather than erroring.
+ */
+export async function resolveDir(cwd: Cwd, path: string, userId: string): Promise<Cwd | string> {
+  const absolute = path.startsWith('/');
+  let stack: Cwd = absolute ? [] : [...cwd];
+  const segments = path.split('/').filter(s => s.length > 0);
+
+  for (const segment of segments) {
+    if (segment === '.') continue;
+    if (segment === '..') {
+      stack.pop();
+      continue;
+    }
+    const children = await vfs.list(dirId(stack), userId);
+    const match = children.find(c => c.name === segment);
+    if (!match) return `${path}: No such file or directory`;
+    if (match.type !== 'directory') return `${path}: Not a directory`;
+    stack = [...stack, { id: match.id, name: match.name }];
+  }
+  return stack;
+}
+
+/** Splits a path into its parent directory and final component. */
+async function resolveParent(
+  cwd: Cwd,
+  path: string,
+  userId: string
+): Promise<{ parent: Cwd; name: string } | string> {
+  const clean = path.replace(/\/+$/, '');
+  const idx = clean.lastIndexOf('/');
+  if (idx === -1) return { parent: [...cwd], name: clean };
+
+  const parentPath = idx === 0 ? '/' : clean.slice(0, idx);
+  const name = clean.slice(idx + 1);
+  const parent = await resolveDir(cwd, parentPath, userId);
+  if (typeof parent === 'string') return parent;
+  return { parent, name };
+}
+
+/** Finds the node a path names, plus the directory containing it. */
+async function resolveNode(
+  cwd: Cwd,
+  path: string,
+  userId: string
+): Promise<{ node: FileNode; parent: Cwd } | string> {
+  const resolved = await resolveParent(cwd, path, userId);
+  if (typeof resolved === 'string') return resolved;
+  const { parent, name } = resolved;
+  if (!name) return `${path}: No such file or directory`;
+
+  const children = await vfs.list(dirId(parent), userId);
+  const node = children.find(c => c.name === name);
+  if (!node) return `${path}: No such file or directory`;
+  return { node, parent };
+}
+
+export interface FsContext {
+  cwd: Cwd;
+  userId: string;
+}
+
+/** Commands handled here rather than by /api/exec. */
+export const VFS_COMMANDS = new Set([
+  'ls', 'cat', 'cd', 'pwd', 'mkdir', 'touch', 'rm', 'mv', 'cp', 'write',
+]);
+
+export const VFS_USAGE: Record<string, string> = {
+  ls: 'Usage: ls [path]',
+  cat: 'Usage: cat <file>',
+  cd: 'Usage: cd <directory>',
+  pwd: 'Usage: pwd',
+  mkdir: 'Usage: mkdir <directory>',
+  touch: 'Usage: touch <file>',
+  rm: 'Usage: rm [-r] <path>',
+  mv: 'Usage: mv <source> <destination>',
+  cp: 'Usage: cp <source> <destination>',
+  write: 'Usage: write <file> <text>    (append with >> in a later phase)',
+};
+
+function usageErr(command: string, message: string): CommandResult {
+  const usage = VFS_USAGE[command];
+  return { stdout: '', stderr: `${command}: ${message}\n${usage ? usage + '\n' : ''}`, code: 1 };
+}
+
+/**
+ * Runs a VFS-backed command. Returns the result plus the (possibly changed)
+ * cwd, so `cd` can move the session without the caller special-casing it.
+ */
+export async function runFsCommand(
+  command: string,
+  args: string[],
+  ctx: FsContext
+): Promise<{ result: CommandResult; cwd: Cwd }> {
+  const { cwd, userId } = ctx;
+  const positional = args.filter(a => !a.startsWith('-'));
+  const flags = args.filter(a => a.startsWith('-'));
+  const keep = (result: CommandResult) => ({ result, cwd });
+
+  switch (command) {
+    case 'pwd':
+      return keep(ok(cwdPath(cwd) + '\n'));
+
+    case 'cd': {
+      const target = positional[0] ?? '/';
+      const next = await resolveDir(cwd, target, userId);
+      if (typeof next === 'string') return keep(err('cd', next));
+      return { result: ok(), cwd: next };
+    }
+
+    case 'ls': {
+      let target = cwd;
+      if (positional[0]) {
+        const resolved = await resolveDir(cwd, positional[0], userId);
+        if (typeof resolved === 'string') return keep(err('ls', resolved));
+        target = resolved;
+      }
+      const children = await vfs.list(dirId(target), userId);
+      if (children.length === 0) return keep(ok(''));
+      const sorted = [...children].sort((a, b) => a.name.localeCompare(b.name));
+      // -l gets a type column; the default stays terse like a real ls.
+      const long = flags.some(f => f.includes('l'));
+      const body = long
+        ? sorted.map(c => `${c.type === 'directory' ? 'd' : '-'}  ${c.name}`).join('\n')
+        : sorted.map(c => (c.type === 'directory' ? c.name + '/' : c.name)).join('\n');
+      return keep(ok(body + '\n'));
+    }
+
+    case 'cat': {
+      if (!positional[0]) return keep(usageErr('cat', 'missing file operand'));
+      const found = await resolveNode(cwd, positional[0], userId);
+      if (typeof found === 'string') return keep(err('cat', found));
+      if (found.node.type === 'directory') return keep(err('cat', `${positional[0]}: Is a directory`));
+      const content = await vfs.read(found.node.id, userId);
+      return keep(ok(content.endsWith('\n') || content === '' ? content : content + '\n'));
+    }
+
+    case 'mkdir': {
+      if (!positional[0]) return keep(usageErr('mkdir', 'missing operand'));
+      const resolved = await resolveParent(cwd, positional[0], userId);
+      if (typeof resolved === 'string') return keep(err('mkdir', resolved));
+      const existing = await vfs.list(dirId(resolved.parent), userId);
+      if (existing.some(c => c.name === resolved.name)) {
+        return keep(err('mkdir', `cannot create directory '${positional[0]}': File exists`));
+      }
+      await vfs.create(dirId(resolved.parent), resolved.name, 'directory', userId);
+      return keep(ok());
+    }
+
+    case 'touch': {
+      if (!positional[0]) return keep(usageErr('touch', 'missing file operand'));
+      const resolved = await resolveParent(cwd, positional[0], userId);
+      if (typeof resolved === 'string') return keep(err('touch', resolved));
+      const existing = await vfs.list(dirId(resolved.parent), userId);
+      // Touching an existing file is a no-op rather than an error, matching
+      // the real thing (which would just update mtime).
+      if (existing.some(c => c.name === resolved.name)) return keep(ok());
+      await vfs.create(dirId(resolved.parent), resolved.name, 'file', userId, '');
+      return keep(ok());
+    }
+
+    case 'write': {
+      if (positional.length < 2) return keep(usageErr('write', 'needs a file and text'));
+      const [target, ...rest] = positional;
+      const text = rest.join(' ');
+      const resolved = await resolveParent(cwd, target, userId);
+      if (typeof resolved === 'string') return keep(err('write', resolved));
+      const existing = await vfs.list(dirId(resolved.parent), userId);
+      const match = existing.find(c => c.name === resolved.name);
+      if (match) {
+        if (match.type === 'directory') return keep(err('write', `${target}: Is a directory`));
+        await vfs.write(match.id, text, userId);
+      } else {
+        await vfs.create(dirId(resolved.parent), resolved.name, 'file', userId, text);
+      }
+      return keep(ok());
+    }
+
+    case 'rm': {
+      if (!positional[0]) return keep(usageErr('rm', 'missing operand'));
+      const found = await resolveNode(cwd, positional[0], userId);
+      if (typeof found === 'string') return keep(err('rm', found));
+      const recursive = flags.some(f => f.includes('r'));
+      if (found.node.type === 'directory' && !recursive) {
+        return keep(err('rm', `cannot remove '${positional[0]}': Is a directory (use -r)`));
+      }
+      // Refusing to delete the directory you're standing in avoids leaving
+      // the session pointed at something that no longer exists.
+      if (cwd.some(c => c.id === found.node.id)) {
+        return keep(err('rm', `cannot remove '${positional[0]}': it is the current directory or a parent of it`));
+      }
+      await vfs.remove(found.node.id, userId);
+      return keep(ok());
+    }
+
+    case 'mv':
+    case 'cp': {
+      if (positional.length < 2) return keep(usageErr(command, 'needs a source and a destination'));
+      const [from, to] = positional;
+      const found = await resolveNode(cwd, from, userId);
+      if (typeof found === 'string') return keep(err(command, found));
+      if (found.node.type === 'directory') {
+        return keep(err(command, `${from}: directories are not supported yet`));
+      }
+
+      const destination = await resolveParent(cwd, to, userId);
+      if (typeof destination === 'string') return keep(err(command, destination));
+
+      const siblings = await vfs.list(dirId(destination.parent), userId);
+      // `mv a b/` where b is a directory means "into b", as in a real shell.
+      const intoDir = siblings.find(c => c.name === destination.name && c.type === 'directory');
+      const targetDir = intoDir ? [...destination.parent, { id: intoDir.id, name: intoDir.name }] : destination.parent;
+      const targetName = intoDir ? found.node.name : destination.name;
+
+      const content = await vfs.read(found.node.id, userId);
+      const inTarget = await vfs.list(dirId(targetDir), userId);
+      const clash = inTarget.find(c => c.name === targetName);
+      if (clash) {
+        if (clash.type === 'directory') return keep(err(command, `${to}: Is a directory`));
+        await vfs.write(clash.id, content, userId);
+      } else {
+        await vfs.create(dirId(targetDir), targetName, 'file', userId, content);
+      }
+      if (command === 'mv') await vfs.remove(found.node.id, userId);
+      return keep(ok());
+    }
+
+    default:
+      return keep(err(command, 'not a filesystem command'));
+  }
+}

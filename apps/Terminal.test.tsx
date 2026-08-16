@@ -104,6 +104,10 @@ describe('TerminalApp', () => {
 
 // Progress feedback. `render` is a real headless-browser page load and can
 // take many seconds; with no indicator that is indistinguishable from a hang.
+// Uses `whoami`, not `ls`: filesystem commands are handled client-side
+// against the VFS now and complete instantly, so they deliberately do NOT
+// raise the running indicator. Only commands that actually leave the
+// browser should.
 describe('TerminalApp running indicator', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -120,16 +124,16 @@ describe('TerminalApp running indicator', () => {
 
   it('shows the command while it is in flight', () => {
     render(<TerminalApp />);
-    run('ls -la');
+    run('whoami');
     expect(screen.getByText(/running/)).toBeInTheDocument();
     // Appears twice on purpose — once as the echoed prompt line, once named
     // inside the indicator so it's clear WHAT is still running.
-    expect(screen.getAllByText('ls -la').length).toBeGreaterThan(1);
+    expect(screen.getAllByText('whoami').length).toBeGreaterThan(1);
   });
 
   it('counts elapsed time up', () => {
     render(<TerminalApp />);
-    run('ls -la');
+    run('whoami');
     act(() => { vi.advanceTimersByTime(1500); });
     expect(screen.getByText(/1\.\d+s/)).toBeInTheDocument();
   });
@@ -138,7 +142,7 @@ describe('TerminalApp running indicator', () => {
   // used to stop the indicator — an error path must not leave it spinning.
   it('clears on vm.exit', () => {
     render(<TerminalApp />);
-    run('ls -la');
+    run('whoami');
     expect(screen.queryByText(/running/)).toBeInTheDocument();
 
     act(() => {
@@ -149,7 +153,7 @@ describe('TerminalApp running indicator', () => {
 
   it('clears even when the command failed', () => {
     render(<TerminalApp />);
-    run('ls -la');
+    run('whoami');
     act(() => {
       subscriber?.({ topic: 'vm.exit', payload: { code: 1 }, from: 'kernel', time: new Date().toISOString() });
     });
@@ -167,7 +171,7 @@ describe('TerminalApp running indicator', () => {
 
   it('gives up on a spinner that never got its vm.exit', () => {
     render(<TerminalApp />);
-    run('ls -la');
+    run('whoami');
     act(() => { vi.advanceTimersByTime(121_000); });
     expect(screen.queryByText(/running/)).not.toBeInTheDocument();
   });

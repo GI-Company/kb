@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { kernel } from '../services/kernel';
 import { Envelope } from '../types';
+import { VFS_COMMANDS, runFsCommand, cwdPath, ROOT_CWD, Cwd } from '../lib/terminalFs';
+import { getCurrentUserId } from '../lib/auth';
 
 interface Line {
   id: string;
@@ -12,7 +14,7 @@ interface Line {
 
 export const TerminalApp: React.FC = () => {
   const [lines, setLines] = useState<Line[]>([
-    { id: 'init', type: 'output', content: 'Kernos OS [Version 1.0.0]\n(c) 2025 Kernos Foundation. All rights reserved.\n\nType "help" for commands.\nPrefix with "?" for natural language (e.g. ? show large files)\nSigned-in accounts also get curl/dig/ping/render — sign in from Settings for network access.\n', time: new Date().toLocaleTimeString() }
+    { id: 'init', type: 'output', content: 'Kernos OS [Version 1.0.0]\n(c) 2025 Kernos Foundation. All rights reserved.\n\nType "help" for commands.\nFilesystem commands (ls, cd, cat, mkdir, write...) act on your real files and persist.\nPrefix with "?" for natural language (e.g. ? show large files)\nSigned-in accounts also get curl/dig/ping/render — sign in from Settings for network access.\n', time: new Date().toLocaleTimeString() }
   ]);
   const [input, setInput] = useState('');
   const [ghostPrediction, setGhostPrediction] = useState('');
@@ -22,6 +24,12 @@ export const TerminalApp: React.FC = () => {
   // load and can take many seconds — with no feedback that reads as a hang.
   const [running, setRunning] = useState<{ label: string; startedAt: number } | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
+  // Filesystem commands run against the real VFS instead of the server's
+  // throwaway jail, so a working directory finally means something and
+  // files survive between commands.
+  const [cwd, setCwd] = useState<Cwd>(ROOT_CWD);
+  const [userId, setUserId] = useState('guest');
+  useEffect(() => { getCurrentUserId().then(setUserId); }, []);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -87,6 +95,21 @@ export const TerminalApp: React.FC = () => {
 
       if (command === 'clear') {
         setLines([]);
+      } else if (VFS_COMMANDS.has(command)) {
+        // Handled entirely in the browser: persistent, instant, and these
+        // never reach execFile at all — less server surface, not more.
+        runFsCommand(command, args, { cwd, userId }).then(({ result, cwd: nextCwd }) => {
+          setCwd(nextCwd);
+          const text = result.stderr || result.stdout;
+          if (text) {
+            setLines(prev => [...prev, {
+              id: Math.random().toString(),
+              type: result.code === 0 ? 'output' : 'error',
+              content: text,
+              time: new Date().toLocaleTimeString()
+            }]);
+          }
+        });
       } else if (command === 'render') {
         // Headless-browser page render — a real navigated page, not just a
         // fetch, and a separate endpoint/budget from every other command
@@ -257,7 +280,7 @@ export const TerminalApp: React.FC = () => {
           line.type === 'intent' ? 'text-purple-400' :
           'text-gray-400'
         }`}>
-          {line.type === 'input' && <span className="text-cyan-500 mr-2">➜ ~</span>}
+          {line.type === 'input' && <span className="text-cyan-500 mr-2">➜</span>}
           {line.type === 'intent' && <span className="text-purple-500 mr-2">⚡</span>}
           {line.imageDataUrl ? (
             <img src={line.imageDataUrl} alt="rendered page" className="max-w-full rounded border border-white/10 my-1" />
@@ -282,7 +305,7 @@ export const TerminalApp: React.FC = () => {
         </div>
       )}
       <div className="flex items-center mt-2 relative">
-        <span className="text-cyan-500 mr-2">➜ ~</span>
+        <span className="text-cyan-500 mr-2">➜ {cwdPath(cwd)}</span>
         <div className="relative flex-1">
           <input
             data-tour="terminal-input"
