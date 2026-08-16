@@ -110,6 +110,21 @@ function flagValue(args: string[], flag: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
+/**
+ * Line count for head/tail, accepting both `-n 5` and the `-5` shorthand.
+ *
+ * Only `-n 5` used to parse. `head -2` fell through to the default of 10
+ * and silently returned the wrong number of lines — no error, just a quiet
+ * lie, which is the worst way for this to fail. The shorthand is also the
+ * form the natural-language translator reaches for.
+ */
+function lineCount(args: string[], fallback = 10): number | null {
+  const shorthand = args.find(a => /^-\d+$/.test(a));
+  const raw = shorthand ? shorthand.slice(1) : flagValue(args, '-n');
+  const n = Number(raw ?? fallback);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 export const TEXT_FILTERS: Record<string, Filter> = {
   grep: (stdin, args) => {
     const flags = args.filter(a => a.startsWith('-'));
@@ -135,14 +150,14 @@ export const TEXT_FILTERS: Record<string, Filter> = {
   },
 
   head: (stdin, args) => {
-    const n = Number(flagValue(args, '-n') ?? 10);
-    if (!Number.isFinite(n) || n < 0) return bad('head', 'invalid line count');
+    const n = lineCount(args);
+    if (n === null) return bad('head', 'invalid line count');
     return ok(join(lines(stdin).slice(0, n)));
   },
 
   tail: (stdin, args) => {
-    const n = Number(flagValue(args, '-n') ?? 10);
-    if (!Number.isFinite(n) || n < 0) return bad('tail', 'invalid line count');
+    const n = lineCount(args);
+    if (n === null) return bad('tail', 'invalid line count');
     return ok(join(n === 0 ? [] : lines(stdin).slice(-n)));
   },
 

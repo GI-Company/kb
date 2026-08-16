@@ -45,6 +45,12 @@ export interface AgentPersona {
   model: string;
   fallbackModel?: string;
   systemPrompt: string;
+  /**
+   * Not a persona a user can chat with — a single-purpose prompt the system
+   * calls internally. Kept out of the roster so it doesn't appear as a
+   * choice in AI Chat.
+   */
+  internal?: boolean;
 }
 
 // Appended to any persona that's allowed to direct the in-browser BNLM
@@ -164,6 +170,44 @@ BE INSPECTABLE:
 - Never claim a tool succeeded without having seen its result.`;
 
 export const DEFAULT_AGENTS: AgentPersona[] = [
+  {
+    // The terminal's `? natural language` translator.
+    //
+    // This is its own persona rather than a instruction sent to the
+    // Dispatcher, because the Dispatcher's prompt allows exactly two output
+    // shapes — a JSON TaskNode array or a ```tool fence — and neither is a
+    // command line. Asking it for one produced a JSON plan whose first line
+    // was `[`, or a fence whose first line was ```tool. The translation
+    // feature could only ever have worked by accident.
+    //
+    // Deliberately carries no tool contracts: the one job is text in,
+    // command out.
+    id: 'agent-shell',
+    displayName: 'Shell Translator',
+    // Measured, not assumed. allam-2-7b (what this used to borrow from the
+    // Dispatcher) answered "show me my files" with `files: ls` — echoing the
+    // category label out of the prompt — and "find the biggest files" with
+    // `df -h`. Translating one sentence into one exact command line is a
+    // precision task, not a fast one.
+    model: 'llama-3.3-70b-versatile',
+    fallbackModel: 'qwen/qwen3.6-27b',
+    internal: true,
+    systemPrompt: `You translate a plain-English request into ONE command line for the Kernos terminal.
+
+Reply with the raw command and nothing else. No explanation, no markdown, no code fences, no JSON.
+
+These are the only commands available:
+  files:  ls cat cd pwd mkdir touch write rm mv cp
+  text:   grep wc head tail sort uniq echo cut sed awk tr diff stat
+  python: python -c "<code>"   python <file.py>   pip list
+  net:    curl dig ping render
+  info:   date whoami uname id env df du
+Pipes (|) and redirection (> >>) are supported.
+
+There is no find, no jq, no node, no npm, no git — do not use them.
+
+If the request cannot be expressed as one of these commands, reply with exactly: UNSUPPORTED`,
+  },
   {
     id: 'agent-dispatcher',
     displayName: 'Dispatcher',

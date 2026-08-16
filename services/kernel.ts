@@ -113,7 +113,12 @@ class Kernel {
   }
 
   private handleAgentRoster(env: Envelope) {
-    const agents = DEFAULT_AGENTS.map(a => ({ id: a.id, name: a.displayName, model: a.model, role: 'agent' }));
+    // Internal personas (the shell translator) are single-purpose prompts
+    // the system calls itself, not people to chat with — so they stay out
+    // of the roster the UI builds its persona list from.
+    const agents = DEFAULT_AGENTS
+      .filter(a => !a.internal)
+      .map(a => ({ id: a.id, name: a.displayName, model: a.model, role: 'agent' }));
     setTimeout(() => {
       this.broadcast({ topic: 'agent.roster:resp', from: 'kernel', to: env.from, payload: { agents }, time: now() });
     }, 0);
@@ -331,12 +336,24 @@ class Kernel {
 
   private async handleTerminalIntent(env: Envelope) {
     const payload = env.payload as { intent: string };
-    const instruction = `Translate this into a single shell command using only common Unix commands, nothing else, no explanation, no markdown — just the raw command on one line: ${payload.intent}`;
     try {
-      const { full } = await this.streamChatChunks({ agentId: 'agent-dispatcher', message: instruction }, () => {});
-      const command = full.split('\n').map(l => l.trim().replace(/^`+|`+$/g, '')).find(l => l.length > 0);
+      const { full } = await this.streamChatChunks(
+        // agent-shell, not agent-dispatcher: the Dispatcher's prompt permits
+        // only a JSON plan or a ```tool fence, so it could never answer with
+        // a command line. See lib/agents.ts.
+        { agentId: 'agent-shell', message: payload.intent },
+        () => {}
+      );
+      const command = extractCommand(full);
       if (command) {
         this.broadcast({ topic: 'sys.terminal.intent:ack', from: 'kernel', payload: { command }, time: now() });
+      } else {
+        this.broadcast({
+          topic: 'sys.terminal.intent:ack',
+          from: 'kernel',
+          payload: { error: `No command here does that. Type "help" to see what this shell can do.` },
+          time: now(),
+        });
       }
     } catch {
       // No translation this time — Terminal.tsx simply won't show one.
@@ -440,5 +457,38 @@ class Kernel {
 }
 
 function now() { return new Date().toISOString(); }
+
+/** Commands a translation is allowed to produce. See handleTerminalIntent. */
+const TRANSLATABLE = new Set([
+  'ls', 'cat', 'cd', 'pwd', 'mkdir', 'touch', 'write', 'rm', 'mv', 'cp',
+  'grep', 'wc', 'head', 'tail', 'sort', 'uniq', 'echo', 'cut', 'sed', 'awk',
+  'tr', 'diff', 'stat', 'python', 'python3', 'pip', 'curl', 'dig', 'ping',
+  'render', 'date', 'whoami', 'uname', 'id', 'env', 'df', 'du',
+]);
+
+/**
+ * Pulls a runnable command line out of a chat reply.
+ *
+ * The old version took the first non-empty line and stripped backticks off
+ * it, which turned a fenced reply's opening ```tool into the command
+ * `tool` — the model was answering in its tool-call format and the parser
+ * handed the fence language to the shell. Fence lines are now skipped
+ * rather than unwrapped, and the result is checked against the commands
+ * this shell actually has, so a confident wrong answer fails here instead
+ * of at the allowlist with a permission error that blames the user.
+ */
+export function extractCommand(reply: string): string | null {
+  const line = reply
+    .split('\n')
+    .map(l => l.trim())
+    .find(l => l.length > 0 && !l.startsWith('```') && !l.startsWith('#'));
+  if (!line || line === 'UNSUPPORTED') return null;
+
+  // Inline single-backtick wrapping is still unwrapped: `ls -la` is a
+  // command, unlike a fence line, which is a delimiter.
+  const command = line.replace(/^`|`$/g, '').trim();
+  const head = command.split(/\s+/)[0];
+  return TRANSLATABLE.has(head) ? command : null;
+}
 
 export const kernel = new Kernel();

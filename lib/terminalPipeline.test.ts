@@ -180,3 +180,19 @@ describe('runPipeline', () => {
     expect(r.stderr).toContain('No such file or directory');
   });
 });
+
+describe('head/tail line counts', () => {
+  // `head -2` used to fall through to the default of 10 and quietly return
+  // the wrong number of lines — no error, just a wrong answer.
+  it('accepts the -N shorthand, not just -n N', () => {
+    const input = 'a\nb\nc\nd\n';
+    expect(TEXT_FILTERS.head(input, ['-2']).stdout).toBe('a\nb\n');
+    expect(TEXT_FILTERS.head(input, ['-n', '2']).stdout).toBe('a\nb\n');
+    expect(TEXT_FILTERS.tail(input, ['-1']).stdout).toBe('d\n');
+  });
+
+  it('still defaults to 10 with no flag', () => {
+    const input = Array.from({ length: 20 }, (_, i) => `line${i}`).join('\n');
+    expect(TEXT_FILTERS.head(input, []).stdout.trim().split('\n')).toHaveLength(10);
+  });
+});

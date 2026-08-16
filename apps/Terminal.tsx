@@ -2,12 +2,19 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { kernel } from '../services/kernel';
 import { Envelope } from '../types';
 import { VFS_COMMANDS, runFsCommand, cwdPath, ROOT_CWD, Cwd, CommandResult, completePath, commonPrefix, readDirFiles } from '../lib/terminalFs';
-import { hasPipelineSyntax, parseLine, runPipeline, PIPE_AWARE_COMMANDS, tokenize } from '../lib/terminalPipeline';
+import { hasPipelineSyntax, parseLine, runPipeline, PIPE_AWARE_COMMANDS, TEXT_FILTERS, tokenize } from '../lib/terminalPipeline';
 import { getCurrentUserId } from '../lib/auth';
 // Imported for its types and the small gate/usage constants only — the
 // 13MB Pyodide runtime is behind a dynamic import inside pythonRuntime and
 // is not fetched until someone actually types `python`.
 import { pythonRuntime, PYTHON_USAGE, GUEST_MESSAGE } from '../lib/pythonRuntime';
+
+/**
+ * Commands that write or delete. A natural-language translation of one of
+ * these is staged for confirmation rather than executed — see the
+ * sys.terminal.intent:ack handler.
+ */
+const MUTATING_COMMANDS = new Set(['rm', 'mv', 'cp', 'write', 'mkdir', 'touch']);
 
 /** Handled by the Pyodide worker, never sent to /api/exec. */
 const PYTHON_COMMANDS = new Set(['python', 'python3', 'pip']);
@@ -263,6 +270,21 @@ export const TerminalApp: React.FC = () => {
         return;
       }
 
+      runCommandLine(cmd);
+      setInput('');
+      return;
+    }
+  };
+
+  /**
+   * Runs one command line, whatever produced it.
+   *
+   * Extracted so the natural-language translator goes through exactly this
+   * path. It used to publish vm.spawn directly, which meant a translated
+   * `ls` ran against the server's throwaway jail instead of the user's real
+   * files, and translated `python`/pipes/redirects could not work at all.
+   */
+  const runCommandLine = useCallback((cmd: string) => {
       // tokenize, not split(' '): a naive split kept the quotes as part of
       // the argument, so `write notes.md "hello world"` stored the literal
       // string `"hello` — quoting silently corrupted the file it wrote.
@@ -332,6 +354,32 @@ export const TerminalApp: React.FC = () => {
             }]);
           }
         });
+      } else if (PIPE_AWARE_COMMANDS.has(command) && command !== 'echo') {
+        // `wc -l notes.md` with no pipe. These filters read stdin, so
+        // without this they fell through to the server — whose jail is a
+        // fresh empty temp dir, so the answer was always "No such file".
+        // A real shell reads the file; so does this now, from the VFS.
+        //
+        // The last non-flag argument is treated as the filename, matching
+        // how `grep pattern file` and `wc -l file` are actually written.
+        // With no filename they still go to the server, where `date`-style
+        // argument-free use keeps working.
+        const positional = args.filter(a => !a.startsWith('-'));
+        const file = positional[positional.length - 1];
+        if (!file) {
+          setRunning({ label: cmd, startedAt: Date.now(), reqId });
+          kernel.publish('vm.spawn', { _request_id: reqId, cmd: command, args, cwd: 'home' });
+        } else {
+          runFsCommand('cat', [file], { cwd, userId }).then(({ result }) => {
+            // Reattribute cat's error to the command the user actually
+            // typed — `wc -l missing.txt` reporting "cat: ..." is confusing.
+            if (result.code !== 0) { emit(result.stderr.replace(/^cat:/, `${command}:`), true); return; }
+            const rest = args.filter(a => a !== file);
+            const out = TEXT_FILTERS[command](result.stdout, rest);
+            emit(out.stderr, true);
+            emit(out.stdout, false);
+          });
+        }
       } else if (PYTHON_COMMANDS.has(command)) {
         void runPython(command, args, cmd);
       } else if (command === 'render') {
@@ -359,10 +407,7 @@ export const TerminalApp: React.FC = () => {
         setRunning({ label: cmd, startedAt: Date.now(), reqId });
         kernel.publish('vm.spawn', { _request_id: reqId, cmd: command, args, cwd: 'home' });
       }
-
-      setInput('');
-    }
-  };
+  }, [cwd, userId, runPython, append]);
 
   useEffect(() => {
     // Subscribe to VM streams, Shadow Engine, Ghost Commands, and NL Shell
@@ -398,8 +443,15 @@ export const TerminalApp: React.FC = () => {
 
       // Natural Language Shell translation received
       if (env.topic === 'sys.terminal.intent:ack') {
-        const command = (env.payload as any).command;
-        if (command) {
+        const { command, error } = env.payload as { command?: string; error?: string };
+        if (error) {
+          setLines(prev => [...prev, {
+            id: Math.random().toString(),
+            type: 'error',
+            content: error + '\n',
+            time: new Date().toLocaleTimeString()
+          }]);
+        } else if (command) {
           setLines(prev => [...prev, {
             id: Math.random().toString(),
             type: 'intent',
@@ -407,16 +459,27 @@ export const TerminalApp: React.FC = () => {
             time: new Date().toLocaleTimeString()
           }]);
 
-          // Auto-execute the translated command
-          const [cmd, ...args] = command.split(' ');
-          const reqId = Math.random().toString(36).substring(7);
-          setRunning({ label: command, startedAt: Date.now(), reqId });
-          kernel.publish('vm.spawn', {
-            _request_id: reqId,
-            cmd,
-            args,
-            cwd: 'home'
-          });
+          // Through the same dispatch as a typed line, so a translated
+          // `ls` reads the user's real files and translated pipes/python
+          // work — publishing vm.spawn directly bypassed all of that.
+          //
+          // But NOT auto-run when it would modify something. Before the
+          // filesystem commands became real, a translated `rm` hit a temp
+          // jail that was discarded anyway; now it would delete the user's
+          // actual files, on one model's reading of one ambiguous sentence.
+          // Mutating translations are staged in the input instead, so the
+          // destructive step is a human pressing Enter.
+          if (MUTATING_COMMANDS.has(tokenize(command)[0])) {
+            setInput(command);
+            setLines(prev => [...prev, {
+              id: Math.random().toString(),
+              type: 'intent',
+              content: 'This one changes files, so it is not run automatically — press Enter to confirm, or edit it first.\n',
+              time: new Date().toLocaleTimeString()
+            }]);
+          } else {
+            runCommandLine(command);
+          }
         }
       }
 

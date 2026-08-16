@@ -107,7 +107,7 @@ Filesystem commands (`ls`, `cd`, `cat`, `mkdir`, `touch`, `write`, `rm`, `mv`, `
 
 Everything else is real command execution, allowlisted and sandboxed — each command runs in a fresh Vercel function invocation with its own temp jail, stripped environment, and a hard timeout. The allowlist is deliberately conservative (coreutils + `node`/`npm`/`npx`) since Vercel's Node runtime doesn't ship git/python/go/rust/ffmpeg the way a real host would; `api/exec.ts` also checks each command actually exists before running it, so an allowlisted-but-missing command fails cleanly instead of 500ing.
 
-Prefix input with `?` for natural-language translation (`? show large files` → the Dispatcher translates it to a real command and runs it).
+Prefix input with `?` for natural-language translation — `? count the lines in notes.md` becomes `wc -l notes.md` and runs. The translator is its own persona (`agent-shell`) given the exact command list this shell has, so it won't reach for `find` or `jq`, which aren't installed; if a request can't be expressed here it says so instead of guessing. Translations that **modify files** (`rm`, `mv`, `cp`, `write`, `mkdir`, `touch`) are placed in the input for you to confirm rather than run automatically — the filesystem commands act on your real files now, so one model's reading of one ambiguous sentence shouldn't be able to delete them.
 
 **Signed-in accounts** additionally get real network commands, which aren't shelled out to (that image has no `curl`) but reimplemented natively with SSRF protection:
 
