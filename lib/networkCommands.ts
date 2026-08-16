@@ -49,18 +49,39 @@ async function guardedFetch(initialUrl: URL, method: string): Promise<Response> 
   throw new Error('too many redirects');
 }
 
+/**
+ * Usage lines, in one place so an error and `help` can't drift apart.
+ * A bare "no URL provided" tells someone their command failed but not what
+ * to type instead — which is the only thing they actually needed.
+ */
+export const NETWORK_USAGE: Record<string, string> = {
+  curl: 'Usage: curl <url>          e.g. curl https://example.com',
+  dig: 'Usage: dig <hostname>      e.g. dig example.com',
+  ping: 'Usage: ping <hostname>     e.g. ping example.com',
+};
+
+/** Appends the usage line so every failure is actionable, not just descriptive. */
+function fail(command: keyof typeof NETWORK_USAGE | string, message: string, code = 1): CommandResult {
+  const usage = NETWORK_USAGE[command];
+  return {
+    stdout: '',
+    stderr: `${command}: ${message}\n${usage ? usage + '\n' : ''}`,
+    code,
+  };
+}
+
 export async function runCurl(args: string[]): Promise<CommandResult> {
   const urlArg = args.find(a => !a.startsWith('-'));
-  if (!urlArg) return { stdout: '', stderr: 'curl: no URL provided\n', code: 1 };
+  if (!urlArg) return fail('curl', 'no URL provided');
 
   let parsed: URL;
   try {
     parsed = new URL(urlArg);
   } catch {
-    return { stdout: '', stderr: `curl: invalid URL "${urlArg}"\n`, code: 1 };
+    return fail('curl', `invalid URL "${urlArg}" — include the scheme, like https://`);
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return { stdout: '', stderr: `curl: protocol "${parsed.protocol}" is not allowed — only http/https\n`, code: 1 };
+    return fail('curl', `protocol "${parsed.protocol}" is not allowed — only http and https`);
   }
 
   const headOnly = args.includes('-I') || args.includes('--head');
@@ -89,7 +110,7 @@ export async function runCurl(args: string[]): Promise<CommandResult> {
 
 export async function runDig(args: string[]): Promise<CommandResult> {
   const hostname = args.find(a => !a.startsWith('-'));
-  if (!hostname) return { stdout: '', stderr: 'dig: no hostname provided\n', code: 1 };
+  if (!hostname) return fail('dig', 'no hostname provided');
   try {
     const records = await lookup(hostname, { all: true, verbatim: true });
     const lines = records.map(r => `${hostname}.\t\tIN\t${r.family === 6 ? 'AAAA' : 'A'}\t${r.address}`);
@@ -104,7 +125,7 @@ const PING_PORT = 443; // TCP-connect check, not real ICMP — see the message i
 
 export async function runPing(args: string[]): Promise<CommandResult> {
   const hostname = args.find(a => !a.startsWith('-'));
-  if (!hostname) return { stdout: '', stderr: 'ping: no hostname provided\n', code: 1 };
+  if (!hostname) return fail('ping', 'no hostname provided');
 
   try {
     await assertPublicHost(hostname);

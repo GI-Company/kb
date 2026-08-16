@@ -35,7 +35,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkRateLimit, getClientIp, rateLimitResponseHeaders } from '../lib/rateLimit.js';
 import { verifyAccessToken, extractBearerToken } from '../lib/verifyAuth.js';
-import { runCurl, runDig, runPing } from '../lib/networkCommands.js';
+import { runCurl, runDig, runPing, NETWORK_USAGE } from '../lib/networkCommands.js';
 
 // Conservative — commands near-certain to exist in a Linux-based Node
 // serverless runtime. No git/python/go/rust/ffmpeg/sqlite3; those aren't
@@ -88,9 +88,12 @@ export default async function handler(req: any, res: any) {
   if (cmd === 'help') {
     res.status(200).json({
       stdout:
-        `Available commands: ${[...ALLOWED_COMMANDS].sort().join(', ')}\n` +
-        `Network commands (signed-in accounts only): ${[...NETWORK_COMMANDS].sort().join(', ')}\n` +
-        `render <url> [--screenshot] — headless-browser page render (signed-in accounts only, separate endpoint)\n`,
+        `Available commands: ${[...ALLOWED_COMMANDS].sort().join(', ')}\n\n` +
+        `Network commands (signed-in accounts only):\n` +
+        // Same strings the failure messages use, so help and errors can't
+        // describe the command differently.
+        [...NETWORK_COMMANDS].sort().map(c => `  ${NETWORK_USAGE[c] || c}`).join('\n') + '\n' +
+        `  Usage: render <url> [--screenshot]   e.g. render https://example.com --screenshot\n`,
       stderr: '',
       code: 0,
     });
