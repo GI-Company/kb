@@ -44,7 +44,16 @@ async function heartbeat(elapsedSeconds: number): Promise<HeartbeatResponse | nu
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ elapsedSeconds }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // A deliberate refusal has to be honored, or the server's fail-closed
+      // policy is cosmetic. api/guest-usage.ts returns 503 with
+      // allowed:false when it cannot enforce the quota in production;
+      // treating that like a network blip would silently grant the very
+      // unmetered access it is refusing.
+      const body = await res.json().catch(() => null);
+      if (body && body.allowed === false) return body as HeartbeatResponse;
+      return null;
+    }
     return await res.json();
   } catch {
     return null; // network hiccup — the next tick will just try again
@@ -65,6 +74,18 @@ export function startGuestUsageTracking(onUpdate: (state: GuestUsageState) => vo
     onUpdate({ remainingSeconds: remaining, limitSeconds: GUEST_DAILY_LIMIT_SECONDS, allowed });
   };
   emit(); // show 15:00 immediately, don't wait on the network
+
+  // Ask the server where this guest actually stands, right now, rather than
+  // waiting a full HEARTBEAT_MS. Without this the optimistic 15:00 is the
+  // only thing anyone sees for the first 20 seconds — so a guest who is
+  // already over quota, or a deployment refusing guest access because it
+  // can't enforce the quota, gets 20 seconds of free rein before the first
+  // check lands. elapsedSeconds 0 means "report, don't bill".
+  heartbeat(0).then(state => {
+    if (!state || cancelled) return;
+    if (state.remainingSeconds !== null) remaining = state.remainingSeconds;
+    emit(state.allowed);
+  });
 
   const tickInterval = setInterval(() => {
     if (cancelled || document.visibilityState !== 'visible') return; // don't bill/tick background time
