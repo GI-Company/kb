@@ -161,6 +161,27 @@ export class BNLMClassifier {
   }
 
   /**
+   * The pooled representation alone — no classification head. Same forward
+   * pass and same last-token pooling predict() uses, stopped one step
+   * earlier, so a caller doing retrieval isn't also paying for (or
+   * confusingly receiving) a label this text was never meant to be judged
+   * against.
+   *
+   * @param {Int32Array|number[]} ids
+   * @returns {Promise<Float32Array>} length dModel
+   */
+  async embed(ids) {
+    const truncated = ids.length > this.contextLen ? ids.slice(-this.contextLen) : ids;
+    const T = Math.max(truncated.length, 1);
+    const idsFlat = new Int32Array(T);
+    idsFlat.set(truncated.length ? truncated : [0]);
+
+    const hidden = await this.trunk.encode(idsFlat, 1, T);
+    const pooled = embeddingLookup(hidden, new Int32Array([T - 1]));
+    return pooled.data.slice(0, this.dModel);
+  }
+
+  /**
    * Causal attribution by occlusion: drop each token in turn, re-run, and
    * measure how far the target class's probability falls. A positive score
    * means that token was holding the prediction up; a negative score means

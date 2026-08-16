@@ -196,22 +196,51 @@ index.
 Shipping that as an embedding invites exactly the failure this codebase has
 spent its last three commits removing: a confident, plausible, wrong answer.
 
-**Resolved: deferred, and not shipping under these names until measured.**
-`similar` and `embed` claim semantics this trunk does not have. If a
-precision@k check shows retrieval is lexical — which is the expectation —
-the honest names are `match` and `index`. A pooled-vector dump may ship
-earlier as `embed --raw`, explicitly a debug view of the representation and
-not marketed as search. Groq embeddings are not an option for this path;
-that would trade the flagship local-first primitive for a network call.
+**Measured. Resolved: not shipping — under any name, including `match`/`index`.**
 
-The reasoning behind that, kept because the decision should be re-derivable:
+`lib/embedPrecision.test.ts` trains a router-shaped classifier (the same
+architecture the Classifier app produces: dModel 24, 1 layer, linear
+mixer) and measures leave-one-out precision@1 on two sets, neither of which
+appeared in training:
 
-Measure before naming. Build a small labelled retrieval set from the VFS,
-run the pooled vector against it, and report precision@k the way
+| Set | Precision@1 | Random baseline |
+|---|---|---|
+| In-domain (new phrasings of the trained files/network/model clusters) | 0.222 | ≈0.25 |
+| Out-of-domain (fruit / greetings / weather — never seen) | 0.333 | ≈0.27 |
+
+In-domain measured *at or below chance*. The expectation going in was
+"lexical, so rename it and ship it" — the actual result is worse than
+lexical: the representation didn't reliably separate its own trained task
+once the phrasing wasn't verbatim from training, which lexical matching
+would have done fine on ("ping the host" and "ping the server" share
+enough characters that a bag-of-characters match would have found each
+other). It isn't finding structure at all; two runs of the seeded test
+produced identical numbers, so this isn't noise from a bad draw.
+
+The sharper problem, and the reason a rename doesn't fix this: wrong
+matches carry *high* cosine similarity (>0.9 in the same run), not low.
+Real retrieval failing looks like low-confidence noise you can filter on.
+This looks like near-collapsed representations that agree with each other
+regardless of content — confidently wrong, the exact failure class this
+codebase has spent the most effort removing everywhere else. `match`/
+`index` would just relocate that failure mode under a more modest name.
+
+`embed()` itself — the pooled-vector accessor, `BNLMClassifier.embed()` in
+src/bnlm/classifier.js and `localClassifier.embed()` on top of it — stays
+in the codebase. It's what made this measurement possible, it's cheap, and
+it's the honest `embed --raw` debug primitive from the original plan below.
+No terminal command wraps it. Nothing calls it a retrieval feature.
+
+The reasoning that led to running this measurement, kept because it's
+still the right process for the next thing that needs it:
+
+Measure before naming. Build a small labelled retrieval set, run the
+representation against it, and report precision@k the way
 `npm run eval:shell` reports translation accuracy. Name the command from the
-result. Shipping the names first and discovering the behaviour later is how
-"looks smart, is wrong" gets into a product — one layer above where the
-`sort -n` and `head -2` bugs lived, and correspondingly harder to notice.
+result — or don't ship it, if the result doesn't clear a bar. Shipping the
+names first and discovering the behaviour later is how "looks smart, is
+wrong" gets into a product — one layer above where the `sort -n` and
+`head -2` bugs lived, and correspondingly harder to notice.
 
 ## `similar` — retrieve over an index
 
@@ -224,7 +253,7 @@ similar <query>                     rank against the default store
 
 **Capabilities:** `model:local`, `vfs`.
 
-**Status: deferred with `embed`, and not shipping under this name.** The
+**Status: measured alongside `embed`, and not shipping under any name.** The
 design below is recorded so the work is ready when the measurement is.
 
 The store itself is straightforward and does not exist yet: name → array of

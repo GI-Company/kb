@@ -375,6 +375,19 @@ class LocalClassifierService {
     return { labels: [...this.labels], paramCount: model.paramCount(), exampleCount: this.encoded.length };
   }
 
+  /**
+   * The pooled trunk representation for `text` — length dModel, no label
+   * attached. NOT exposed as a terminal command yet: see BUILTINS.md's
+   * "embed / similar" section. This exists so that question can be
+   * measured (precision@k against a small labelled set) rather than
+   * guessed at from the architecture alone.
+   */
+  async embed(text: string): Promise<number[]> {
+    if (!this.model || !this.tokenizer) throw new Error('No classifier has been trained yet in this tab.');
+    const known = this.toKnownText(text);
+    return Array.from(await this.model.embed(this.tokenizer.encode(known)));
+  }
+
   async predict(text: string): Promise<PredictResult> {
     if (!this.model || !this.tokenizer) throw new Error('No classifier has been trained yet in this tab.');
     const known = this.toKnownText(text);
