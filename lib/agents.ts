@@ -184,11 +184,14 @@ export const DEFAULT_AGENTS: AgentPersona[] = [
     // command out.
     id: 'agent-shell',
     displayName: 'Shell Translator',
-    // Measured, not assumed. allam-2-7b (what this used to borrow from the
-    // Dispatcher) answered "show me my files" with `files: ls` — echoing the
-    // category label out of the prompt — and "find the biggest files" with
-    // `df -h`. Translating one sentence into one exact command line is a
-    // precision task, not a fast one.
+    // Measured, not assumed, and the measurement is reproducible:
+    //   npm run eval:shell        (scripts/eval-agent-shell.mjs)
+    // Re-run it before and after any model change. allam-2-7b — what this
+    // used to borrow from the Dispatcher — scores 4/7 there, answering
+    // "show me my files" with `files` and "find the biggest files" with
+    // `df -h`. This model scores 6/7. Translating one sentence into one
+    // exact command line is a precision task, not a fast one; don't
+    // downgrade on the strength of two hand-typed examples.
     model: 'llama-3.3-70b-versatile',
     fallbackModel: 'qwen/qwen3.6-27b',
     internal: true,

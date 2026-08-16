@@ -10,7 +10,8 @@
     "test": "vitest run",
     "prebuild": "node scripts/copy-pyodide.mjs",
     "predev": "node scripts/copy-pyodide.mjs",
-    "postinstall": "node scripts/copy-pyodide.mjs"
+    "postinstall": "node scripts/copy-pyodide.mjs",
+    "eval:shell": "node scripts/eval-agent-shell.mjs"
   },
   "dependencies": {
     "@sparticuz/chromium": "^149.0.0",
