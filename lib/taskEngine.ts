@@ -72,7 +72,9 @@ export async function planGoal(goal: string): Promise<TaskNode[]> {
 
 async function executeNode(node: TaskNode): Promise<string> {
   if (node.command.startsWith('bnlm.') || node.command === 'kernos.exec') {
-    return runTool({ tool: node.command, args: node.args });
+    // DAG nodes only consume the prose result; the structured glass-box
+    // detail is for interactive surfaces.
+    return (await runTool({ tool: node.command, args: node.args })).text;
   }
   const [cmd, ...args] = node.command.split(' ').filter(Boolean);
   if (!cmd) throw new Error('Empty command');

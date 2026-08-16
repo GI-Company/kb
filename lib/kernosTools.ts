@@ -4,13 +4,15 @@
 // kernos.exec -> the new sandboxed lib/kernosExec.ts. Kept as a thin
 // dispatcher rather than merging into either implementation file, since
 // AIChat.tsx and lib/taskEngine.ts only need "give me a ToolCall, get a
-// result string back," not which capability handled it.
+// result back," not which capability handled it. The result carries an
+// optional structured `glassBox` payload so a UI can show why a
+// classification came out the way it did instead of only its prose summary.
 
-import { ToolCall, runLocalModelTool } from './localModelTools';
+import { ToolCall, ToolRunResult, runLocalModelTool } from './localModelTools';
 import { runKernosExec } from './kernosExec';
 import { getCurrentUserId } from './auth';
 
-export async function runTool(toolCall: ToolCall): Promise<string> {
+export async function runTool(toolCall: ToolCall): Promise<ToolRunResult> {
   if (toolCall.tool.startsWith('bnlm.')) {
     return runLocalModelTool(toolCall);
   }
@@ -24,12 +26,12 @@ export async function runTool(toolCall: ToolCall): Promise<string> {
     const userId = await getCurrentUserId();
     const result = await runKernosExec(code, userId, typeof timeoutMs === 'number' ? timeoutMs : undefined);
     if (!result.ok) throw new Error(result.error || 'kernos.exec failed');
-    if (typeof result.value === 'string') return result.value;
-    if (result.value === undefined) return '(kernos.exec ran successfully, returned no value)';
+    if (typeof result.value === 'string') return { text: result.value };
+    if (result.value === undefined) return { text: '(kernos.exec ran successfully, returned no value)' };
     try {
-      return JSON.stringify(result.value, null, 2);
+      return { text: JSON.stringify(result.value, null, 2) };
     } catch {
-      return String(result.value);
+      return { text: String(result.value) };
     }
   }
 

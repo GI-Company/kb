@@ -1,13 +1,13 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { kernel } from '../services/kernel';
 import { Envelope } from '../types';
-import { extractToolCall, stripToolBlock } from '../lib/localModelTools';
+import { extractToolCall, stripToolBlock, GlassBoxDetail } from '../lib/localModelTools';
 import { runTool } from '../lib/kernosTools';
 import { getCurrentUserId } from '../lib/auth';
 import { trackEvent } from '../lib/analytics';
 import { getSetting } from '../lib/settings';
 import { extractThinking } from '../lib/thinking';
-import { Bot, Send, Loader2, ChevronDown, ChevronRight, Zap, ImagePlus, Brain, Plus, MessageSquare, Trash2, Clock } from 'lucide-react';
+import { Bot, Send, Loader2, ChevronDown, ChevronRight, Zap, ImagePlus, Brain, Plus, MessageSquare, Trash2, Clock, Search } from 'lucide-react';
 
 interface ChatMessage {
     id: string;
@@ -16,6 +16,8 @@ interface ChatMessage {
     thinking?: string;
     agentId?: string;
     time: string;
+    /** Structured detail behind a classifier result — rendered as "Why this decision?". */
+    glassBox?: GlassBoxDetail;
 }
 
 interface AgentInfo {
@@ -51,6 +53,85 @@ const ThinkingBlock: React.FC<{ content: string; isStreaming?: boolean }> = ({ c
                 <div className="mt-1 ml-4 pl-2 border-l border-amber-500/20 text-[11px] text-gray-500 whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
                     {content}
                     {isStreaming && <span className="animate-pulse text-amber-400">▊</span>}
+                </div>
+            )}
+        </div>
+    );
+};
+
+// "Why this decision?" — the inspectable half of a classifier result.
+// A label and a confidence number alone can't be checked; the full ranked
+// distribution shows how close the runner-up was, and the per-word bars
+// show which evidence actually held the answer up (measured by occlusion:
+// remove that word, how far does the probability fall).
+const GlassBoxPanel: React.FC<{ detail: GlassBoxDetail }> = ({ detail }) => {
+    const [expanded, setExpanded] = useState(false);
+    // Scale bars against the strongest contribution so a redundant-evidence
+    // case (every word near zero) doesn't get stretched into looking decisive.
+    const maxScore = Math.max(0.001, ...(detail.contributions || []).map(c => Math.abs(c.score)));
+    const borderline = detail.margin < 0.15;
+
+    return (
+        <div className="mt-2">
+            <button
+                onClick={() => setExpanded(!expanded)}
+                className="flex items-center gap-1.5 text-[10px] text-cyan-400/70 hover:text-cyan-400 transition-colors font-mono"
+            >
+                {expanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+                <Search size={10} />
+                <span>Why this decision?</span>
+                {borderline && <span className="text-amber-400 ml-1">borderline</span>}
+            </button>
+            {expanded && (
+                <div className="mt-1.5 ml-4 pl-2 border-l border-cyan-500/20 space-y-2">
+                    <div>
+                        <div className="text-[9px] text-gray-600 uppercase tracking-wider mb-1">Label probabilities</div>
+                        {detail.ranked.map(r => (
+                            <div key={r.label} className="flex items-center gap-2 mb-0.5">
+                                <span className={`text-[10px] font-mono w-24 truncate ${r.label === detail.label ? 'text-cyan-300' : 'text-gray-500'}`}>
+                                    {r.label}
+                                </span>
+                                <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
+                                    <div
+                                        className={r.label === detail.label ? 'h-full bg-cyan-400' : 'h-full bg-gray-600'}
+                                        style={{ width: `${Math.max(r.probability * 100, 1)}%` }}
+                                    />
+                                </div>
+                                <span className="text-[10px] font-mono text-gray-500 w-11 text-right">
+                                    {(r.probability * 100).toFixed(1)}%
+                                </span>
+                            </div>
+                        ))}
+                    </div>
+
+                    {detail.contributions && detail.contributions.length > 0 && (
+                        <div>
+                            <div className="text-[9px] text-gray-600 uppercase tracking-wider mb-1">
+                                What drove it (drop in confidence if removed)
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                                {detail.contributions.map((c, i) => (
+                                    <span
+                                        key={i}
+                                        title={`Removing "${c.token}" changes confidence by ${(c.score * 100).toFixed(1)} points`}
+                                        className="px-1.5 py-0.5 rounded text-[10px] font-mono border"
+                                        style={{
+                                            // Opacity encodes magnitude relative to the strongest word.
+                                            backgroundColor: `rgba(34, 211, 238, ${Math.max(0, c.score / maxScore) * 0.35})`,
+                                            borderColor: `rgba(34, 211, 238, ${Math.max(0, c.score / maxScore) * 0.5})`,
+                                        }}
+                                    >
+                                        {c.token}
+                                    </span>
+                                ))}
+                            </div>
+                            {detail.contributions.every(c => Math.abs(c.score) < 0.01) && (
+                                <div className="text-[10px] text-gray-600 mt-1 italic">
+                                    No single word was decisive — the evidence is redundant.
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             )}
         </div>
@@ -245,13 +326,14 @@ export const AIChatApp: React.FC = () => {
                     }]);
                 }
                 if (toolCall) {
-                    const publishResult = (content: string) => {
+                    const publishResult = (content: string, glassBox?: GlassBoxDetail) => {
                         setMessages(msgs => [...msgs, {
                             id: Math.random().toString(36),
                             role: 'agent',
                             content,
                             agentId: 'kernos-tool',
-                            time: new Date().toLocaleTimeString()
+                            time: new Date().toLocaleTimeString(),
+                            glassBox,
                         }]);
                     };
                     // Announced on the bus so apps/AgentMonitor.tsx can show
@@ -262,7 +344,7 @@ export const AIChatApp: React.FC = () => {
                     runTool(toolCall)
                         .then(result => {
                             kernel.publish('agent.tool:done', { agentId, tool: toolCall.tool });
-                            publishResult(`🧠 ${result}`);
+                            publishResult(`🧠 ${result.text}`, result.glassBox);
                         })
                         .catch((err: any) => {
                             const message = err?.message || String(err);
@@ -538,6 +620,7 @@ export const AIChatApp: React.FC = () => {
                                 )}
                                 {msg.thinking && <ThinkingBlock content={msg.thinking} />}
                                 <div className="whitespace-pre-wrap">{msg.content}</div>
+                                {msg.glassBox && <GlassBoxPanel detail={msg.glassBox} />}
                                 <div className="text-[10px] text-gray-600 mt-2">{msg.time}</div>
                             </div>
                         </div>

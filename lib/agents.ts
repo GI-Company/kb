@@ -77,7 +77,28 @@ ranking candidates or spotting outliers, not just generating new text):
 Only emit a tool block when the user actually wants a local model action —
 for everything else, respond normally. You may include normal conversational
 text before or after the tool block explaining what you're about to do; the
-block itself must contain nothing but that one JSON object.`;
+block itself must contain nothing but that one JSON object.
+
+There is also a CLASSIFIER, which is the right tool whenever the task is
+"which of these N things is it?" — routing, tagging, triage, picking a
+handler. Prefer it over asking a generative model to emit a label: the
+output is a probability distribution over known labels, so it cannot come
+back malformed, and it carries a confidence you can act on.
+
+\`\`\`tool
+{"tool":"bnlm.trainClassifier","args":{"examples":[{"text":"open the readme","label":"files"},{"text":"ping the server","label":"network"}],"steps":250}}
+\`\`\`
+
+then
+
+\`\`\`tool
+{"tool":"bnlm.classify","args":{"text":"download that page"}}
+\`\`\`
+
+It needs at least 2 distinct labels, and wants a few hundred varied
+examples — a couple dozen will memorize and fail on anything new. The
+result includes the full ranked distribution and a per-word explanation of
+what drove the answer, which is shown to the user.`;
 
 // Appended alongside BNLM_TOOL_CONTRACT — a general escape hatch for
 // anything that isn't a single bnlm.* call: multi-step logic, combining
