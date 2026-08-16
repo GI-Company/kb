@@ -26,3 +26,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Pyodide runtime, copied from node_modules at build time (~13MB)
+public/pyodide/

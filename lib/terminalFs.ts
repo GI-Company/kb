@@ -329,6 +329,35 @@ export async function completePath(
   return { prefix: dirPart, matches };
 }
 
+/**
+ * Every file in the current directory, as {name: content}. This is what a
+ * Python script sees when it calls `open("notes.md")` — the bridge between
+ * the VFS and the interpreter's in-memory filesystem.
+ *
+ * Deliberately one level deep and file-only: mirroring the whole tree into
+ * WASM memory on every `python` invocation would mean paying for files the
+ * script will never touch, and a script that wants a subdirectory can be
+ * `cd`'d into it first. `maxBytes` caps the total so a large VFS can't wedge
+ * the postMessage that carries it.
+ */
+export async function readDirFiles(
+  cwd: Cwd,
+  userId: string,
+  maxBytes = 2_000_000
+): Promise<Record<string, string>> {
+  const children = await vfs.list(dirId(cwd), userId);
+  const files: Record<string, string> = {};
+  let total = 0;
+  for (const child of children) {
+    if (child.type !== 'file') continue;
+    const content = await vfs.read(child.id, userId);
+    total += content.length;
+    if (total > maxBytes) break;
+    files[child.name] = content;
+  }
+  return files;
+}
+
 /** Longest common prefix, so Tab can advance partway on an ambiguous match. */
 export function commonPrefix(items: string[]): string {
   if (items.length === 0) return '';

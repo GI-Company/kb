@@ -1,9 +1,16 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { kernel } from '../services/kernel';
 import { Envelope } from '../types';
-import { VFS_COMMANDS, runFsCommand, cwdPath, ROOT_CWD, Cwd, completePath, commonPrefix } from '../lib/terminalFs';
+import { VFS_COMMANDS, runFsCommand, cwdPath, ROOT_CWD, Cwd, CommandResult, completePath, commonPrefix, readDirFiles } from '../lib/terminalFs';
 import { hasPipelineSyntax, parseLine, runPipeline, PIPE_AWARE_COMMANDS, tokenize } from '../lib/terminalPipeline';
 import { getCurrentUserId } from '../lib/auth';
+// Imported for its types and the small gate/usage constants only — the
+// 13MB Pyodide runtime is behind a dynamic import inside pythonRuntime and
+// is not fetched until someone actually types `python`.
+import { pythonRuntime, PYTHON_USAGE, GUEST_MESSAGE } from '../lib/pythonRuntime';
+
+/** Handled by the Pyodide worker, never sent to /api/exec. */
+const PYTHON_COMMANDS = new Set(['python', 'python3', 'pip']);
 
 interface Line {
   id: string;
@@ -15,7 +22,7 @@ interface Line {
 
 export const TerminalApp: React.FC = () => {
   const [lines, setLines] = useState<Line[]>([
-    { id: 'init', type: 'output', content: 'Kernos OS [Version 1.0.0]\n(c) 2025 Kernos Foundation. All rights reserved.\n\nType "help" for commands.\nFilesystem commands (ls, cd, cat, mkdir, write...) act on your real files and persist.\nPrefix with "?" for natural language (e.g. ? show large files)\nSigned-in accounts also get curl/dig/ping/render — sign in from Settings for network access.\n', time: new Date().toLocaleTimeString() }
+    { id: 'init', type: 'output', content: 'Kernos OS [Version 1.0.0]\n(c) 2025 Kernos Foundation. All rights reserved.\n\nType "help" for commands.\nFilesystem commands (ls, cd, cat, mkdir, write...) act on your real files and persist.\nPrefix with "?" for natural language (e.g. ? show large files)\nSigned-in accounts also get python/pip and curl/dig/ping/render — sign in from Settings.\n', time: new Date().toLocaleTimeString() }
   ]);
   const [input, setInput] = useState('');
   // Persisted so history survives a reload, like a real shell's.
@@ -28,7 +35,11 @@ export const TerminalApp: React.FC = () => {
   // What's currently in flight, so the prompt can show progress instead of
   // going silent. `render` in particular is a real headless-browser page
   // load and can take many seconds — with no feedback that reads as a hang.
-  const [running, setRunning] = useState<{ label: string; startedAt: number; reqId?: string } | null>(null);
+  // `reqId` means a server request that Ctrl+C cancels through the kernel;
+  // `local` means an in-browser worker that Ctrl+C kills directly.
+  const [running, setRunning] = useState<
+    { label: string; startedAt: number; reqId?: string; local?: 'python' } | null
+  >(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   // Filesystem commands run against the real VFS instead of the server's
   // throwaway jail, so a working directory finally means something and
@@ -74,7 +85,7 @@ export const TerminalApp: React.FC = () => {
     let matches: string[] = [];
     let dirPrefix = '';
     if (isCommandPosition) {
-      const known = [...VFS_COMMANDS, ...PIPE_AWARE_COMMANDS, 'clear', 'help', 'render', 'curl', 'dig', 'ping'];
+      const known = [...VFS_COMMANDS, ...PIPE_AWARE_COMMANDS, ...PYTHON_COMMANDS, 'clear', 'help', 'render', 'curl', 'dig', 'ping'];
       matches = [...new Set(known)].filter(c => c.startsWith(partial)).sort();
     } else {
       const found = await completePath(cwd, partial, userId);
@@ -100,6 +111,69 @@ export const TerminalApp: React.FC = () => {
     }
   }, [input, cwd, userId]);
 
+  const append = useCallback((content: string, type: Line['type'] = 'output') => {
+    if (!content) return;
+    setLines(prev => [...prev, {
+      id: Math.random().toString(),
+      type,
+      content,
+      time: new Date().toLocaleTimeString()
+    }]);
+  }, []);
+
+  /**
+   * Real CPython, in the tab. Off-thread on a worker, so a runaway loop is
+   * killable and the UI keeps painting.
+   *
+   * Two gates before anything is downloaded (see lib/pythonRuntime.ts):
+   * signed-in only, and lazy — a guest gets an explanation, not 13MB.
+   */
+  const execPython = useCallback(async (command: string, args: string[], stdin?: string): Promise<CommandResult> => {
+    if (!(await pythonRuntime.isAvailable())) {
+      return { stdout: '', stderr: GUEST_MESSAGE, code: 1 };
+    }
+
+    if (command === 'pip') {
+      if (args[0] === 'list') return pythonRuntime.pipList();
+      if (args[0] !== 'install' || args.length < 2) {
+        return { stdout: '', stderr: PYTHON_USAGE.pip + '\n', code: 2 };
+      }
+      return pythonRuntime.pipInstall(args.slice(1), text => append(text + '\n'));
+    }
+
+    let code: string | null = null;
+    if (args[0] === '-c') {
+      code = args.slice(1).join(' ');
+    } else if (args.length > 0 && !args[0].startsWith('-')) {
+      // A script name is resolved against the VFS, not a disk that doesn't
+      // exist — `cat` already knows how to walk a path from the cwd.
+      const { result } = await runFsCommand('cat', [args[0]], { cwd, userId });
+      if (result.code !== 0) return result;
+      code = result.stdout;
+    }
+
+    if (!code) {
+      return { stdout: '', stderr: PYTHON_USAGE.python + '\n', code: 2 };
+    }
+
+    // Files in the cwd are mapped into the interpreter first, which is what
+    // makes open("notes.md") read the user's actual file. Piped input lands
+    // on sys.stdin so `cat log.txt | python -c "..."` behaves as expected.
+    const files = await readDirFiles(cwd, userId);
+    return pythonRuntime.run(code, files, text => append(text + '\n'), stdin);
+  }, [append, cwd, userId]);
+
+  const runPython = useCallback(async (command: string, args: string[], rawLine: string) => {
+    setRunning({ label: rawLine, startedAt: Date.now(), local: 'python' });
+    try {
+      const result = await execPython(command, args);
+      append(result.stderr, 'error');
+      append(result.stdout);
+    } finally {
+      setRunning(null);
+    }
+  }, [append, execPython]);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Ctrl+C. Aborts an in-flight request through the kernel; with nothing
     // running it just discards the current line, like a real shell.
@@ -107,6 +181,17 @@ export const TerminalApp: React.FC = () => {
       e.preventDefault();
       if (running?.reqId) {
         kernel.publish('vm.cancel', { _request_id: running.reqId });
+      } else if (running?.local === 'python') {
+        // A real kill: the interpreter is on a worker, so terminate() stops
+        // `while True: pass` dead. Nothing else can interrupt WASM.
+        pythonRuntime.terminate();
+        setRunning(null);
+        setLines(prev => [...prev, {
+          id: Math.random().toString(),
+          type: 'error',
+          content: '^C\npython: interpreter terminated.\n',
+          time: new Date().toLocaleTimeString()
+        }]);
       } else {
         setLines(prev => [...prev, {
           id: Math.random().toString(),
@@ -178,7 +263,10 @@ export const TerminalApp: React.FC = () => {
         return;
       }
 
-      const [command, ...args] = cmd.split(' ');
+      // tokenize, not split(' '): a naive split kept the quotes as part of
+      // the argument, so `write notes.md "hello world"` stored the literal
+      // string `"hello` — quoting silently corrupted the file it wrote.
+      const [command, ...args] = tokenize(cmd);
       const reqId = Math.random().toString(36).substring(7);
 
       const emit = (text: string, isError: boolean) => {
@@ -203,6 +291,12 @@ export const TerminalApp: React.FC = () => {
           let workingCwd = cwd;
           runPipeline(parsed, {
             runVfs: async (stage, stdin) => {
+              // Python is browser-side too, so it belongs in a pipeline like
+              // the VFS commands do — not in the "runs on the server, has no
+              // stdin" rejection below.
+              if (PYTHON_COMMANDS.has(stage.command)) {
+                return execPython(stage.command, stage.args, stdin);
+              }
               if (!VFS_COMMANDS.has(stage.command)) return null;
               // `write` is how a redirect target gets its content, so a
               // piped stage passes stdin through as the text to write.
@@ -216,7 +310,7 @@ export const TerminalApp: React.FC = () => {
               const { result } = await runFsCommand('write', args, { cwd: workingCwd, userId });
               return result;
             },
-            isServerCommand: (c) => !VFS_COMMANDS.has(c),
+            isServerCommand: (c) => !VFS_COMMANDS.has(c) && !PYTHON_COMMANDS.has(c),
           }).then(result => {
             setCwd(workingCwd);
             emit(result.stderr, true);
@@ -238,6 +332,8 @@ export const TerminalApp: React.FC = () => {
             }]);
           }
         });
+      } else if (PYTHON_COMMANDS.has(command)) {
+        void runPython(command, args, cmd);
       } else if (command === 'render') {
         // Headless-browser page render — a real navigated page, not just a
         // fetch, and a separate endpoint/budget from every other command

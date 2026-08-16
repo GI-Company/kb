@@ -103,7 +103,9 @@ You can also drive all of this from **AI Chat** — ask the Dispatcher or Kernos
 
 ## 💻 Terminal
 
-Real command execution, allowlisted and sandboxed — each command runs in a fresh Vercel function invocation with its own temp jail, stripped environment, and a hard timeout. The allowlist is deliberately conservative (coreutils + `node`/`npm`/`npx`) since Vercel's Node runtime doesn't ship git/python/go/rust/ffmpeg the way a real host would; `api/exec.ts` also checks each command actually exists before running it, so an allowlisted-but-missing command fails cleanly instead of 500ing.
+Filesystem commands (`ls`, `cd`, `cat`, `mkdir`, `touch`, `write`, `rm`, `mv`, `cp`) don't leave the browser at all — they run against your real, persistent VFS, so there's a working directory that means something and files that survive between commands. Pipes and redirection (`|`, `>`, `>>`) are composed client-side too, which is why those characters stay in the server's rejected-character list rather than being forwarded. Tab completion and history are wired to both.
+
+Everything else is real command execution, allowlisted and sandboxed — each command runs in a fresh Vercel function invocation with its own temp jail, stripped environment, and a hard timeout. The allowlist is deliberately conservative (coreutils + `node`/`npm`/`npx`) since Vercel's Node runtime doesn't ship git/python/go/rust/ffmpeg the way a real host would; `api/exec.ts` also checks each command actually exists before running it, so an allowlisted-but-missing command fails cleanly instead of 500ing.
 
 Prefix input with `?` for natural-language translation (`? show large files` → the Dispatcher translates it to a real command and runs it).
 
@@ -118,6 +120,18 @@ render https://example.com --screenshot # ...or a PNG, inline in the terminal
 ```
 
 `render` needs enough function budget for a Chromium cold start plus a page load: fine on Fluid compute / Active CPU billing, too tight on Hobby's hard 10-second limit.
+
+Signed-in accounts also get **real CPython 3.14**, compiled to WebAssembly and running on a Web Worker in your own tab:
+
+```
+python -c "print(2 + 2)"
+python analyze.py                       # the script comes from your VFS
+cat log.txt | python -c "import sys; print(len(sys.stdin.read()))"
+```
+
+Files in the working directory are mapped in read-only, so `open("notes.md")` reads your actual file. Because it's on a worker rather than the main thread, `Ctrl+C` genuinely kills it — a `while True: pass` is terminable and the UI keeps painting throughout.
+
+Two things to know about the current shape. The ~13 MB runtime is served from our own origin (the CSP allows no CDN scripts, and COEP `require-corp` would refuse a cross-origin one anyway) and is fetched lazily on the first `python`, so guests and anyone who never uses it pay nothing. And it is **standard-library only for now**: package wheels aren't in the npm package and could only come from a CDN, which would mean widening `connect-src`, so `pip install` is off behind a single documented flag in `lib/pythonRuntime.ts`. The stdlib is complete — `json`, `re`, `math`, `csv`, `datetime`, `statistics`, `sqlite3` and the rest all work with no install step — and `pip list` shows what enabling installs would add.
 
 ---
 

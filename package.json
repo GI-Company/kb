@@ -7,7 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prebuild": "node scripts/copy-pyodide.mjs",
+    "predev": "node scripts/copy-pyodide.mjs",
+    "postinstall": "node scripts/copy-pyodide.mjs"
   },
   "dependencies": {
     "@sparticuz/chromium": "^149.0.0",
@@ -16,6 +19,7 @@
     "lucide-react": "^0.563.0",
     "posthog-js": "^1.417.1",
     "puppeteer-core": "^25.7.0",
+    "pyodide": "^314.0.3",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "sucrase": "^3.35.1",

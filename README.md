@@ -44,7 +44,8 @@ Get a Groq API key at [console.groq.com/keys](https://console.groq.com/keys). It
 - **Local Model app** — the full BNLM loop in a window: paste or Groq-generate training text, pick a mixer (attention / linear / RWKV), initialize, train (single-threaded or data-parallel across Web Workers), generate, score, export as a quantized `.qlm1` file. Trained models can be **saved by name and reloaded after a refresh** — a trained model isn't a session-scoped toy, it persists.
 - **Agentic tool-calling** — ask any AI Chat agent to "train a model on this text" or "generate from the local model," and it emits a structured tool call the client executes against the BNLM engine, reporting back into the chat. Agents can also emit `kernos.exec` to run real TypeScript in a sandbox for anything a single `bnlm.*` call doesn't cover.
 - **Accounts** — real sign-up/sign-in via Supabase Auth, with chat history, the virtual filesystem, and saved models syncing across devices. Guest access stays available with no signup (data stays in that browser, metered to 15 min/day).
-- **Terminal** — a real ephemeral sandboxed command executor, allowlisted and argument-sanitized, in a fresh function invocation per command. Signed-in accounts additionally get native `curl`/`dig`/`ping` with SSRF protection, plus `render <url>` for a headless-Chromium page load or screenshot.
+- **Terminal** — a real shell, not a prompt-shaped text box. Filesystem commands (`ls`/`cd`/`cat`/`mkdir`/`write`/`rm`/`mv`/`cp`) act on your actual persistent files in the browser, with a working directory, tab completion and persistent history. Pipes and redirection (`|`, `>`, `>>`) are composed client-side and never sent anywhere. Anything else runs as an ephemeral sandboxed command, allowlisted and argument-sanitized, in a fresh function invocation. Signed-in accounts additionally get **real CPython in the tab** (see below), native `curl`/`dig`/`ping` with SSRF protection, and `render <url>` for a headless-Chromium page load or screenshot.
+- **Python** — `python -c "…"` and `python script.py` run genuine CPython 3.14 compiled to WebAssembly, on a Web Worker. Files in the working directory are readable with `open()`, it composes with pipes and redirection like any other command, and `Ctrl+C` terminates the worker outright — a `while True: pass` is actually killable, and the UI keeps painting the whole time. The ~13 MB runtime is served from our own origin (the CSP allows no CDN scripts) and is fetched lazily on first use, for signed-in accounts only.
 - **Editor / CDE** — write a TSX applet and hit **Launch**: it compiles in-browser (Sucrase) and mounts live in its own window, inside a closed shadow root with a restricted kernel proxy.
 - **Multi-Agent Workspace** — ask one question and get four specialist personas answering side by side, each on its own model.
 - **Monitors** — a live bus traffic sniffer, an agent activity monitor (requests, streamed chars, round-trip latency, tool calls, errors), and system metrics read from real browser and app state.
@@ -83,6 +84,10 @@ lib/kernosTools.ts                Tool dispatch (bnlm.* and kernos.exec)
 lib/auth.ts                       Supabase Auth + guest identity
 lib/vfs.ts, chatStore.ts          Virtual filesystem + chat history (Supabase or local, by account)
 lib/settings.ts                   User preferences (localStorage, cross-tab synced)
+lib/terminalFs.ts                 VFS-backed filesystem commands + cwd for the terminal
+lib/terminalPipeline.ts           Client-side pipes and redirection (never sent to the server)
+lib/pythonRuntime.ts              Pyodide host: signed-in gate, lazy load, hard timeout/kill
+lib/python.worker.ts              CPython on a worker; stdout/stderr capture, VFS file bridge
 lib/networkCommands.ts            Native curl/dig/ping
 lib/networkGuard.ts               SSRF protection for outbound requests
 src/bnlm/                         The vendored BNLM engine (tensor/model/tokenizer/optimizer/workers)

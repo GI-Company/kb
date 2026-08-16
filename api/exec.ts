@@ -90,6 +90,13 @@ export default async function handler(req: any, res: any) {
       stdout:
         `Filesystem (persistent, runs in your browser against your files):\n` +
         `  ls, cat, cd, pwd, mkdir, touch, write, rm, mv, cp\n\n` +
+        `Python (real CPython in your browser, signed-in accounts only):\n` +
+        `  python -c "<code>"  |  python <file.py>  |  pip list\n` +
+        `  Full standard library; package installs are not enabled (see pip list).\n` +
+        `  Files in the current directory are readable with open().\n` +
+        `  First run downloads the ~13 MB runtime; Ctrl+C kills it outright.\n\n` +
+        `Shell composition (piped and redirected in your browser, never sent to the server):\n` +
+        `  cmd | grep/wc/head/tail/sort/uniq   cmd > file   cmd >> file\n\n` +
         `Sandboxed commands (fresh temp dir per run, nothing persists):\n` +
         `  ${[...ALLOWED_COMMANDS].sort().join(', ')}\n\n` +
         `Network commands (signed-in accounts only):\n` +

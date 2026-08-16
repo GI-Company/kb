@@ -23,6 +23,11 @@ This document maps what's actually running today, and where each piece came from
 │    lib/appletCompiler.ts (Sucrase, in-browser TSX→JS)              │
 │      ├── DynamicApplet.tsx  (human-authored applets, shadow DOM)   │
 │      └── lib/kernosExec.ts  (agent-authored code, sandboxed)       │
+│                                                                    │
+│    lib/terminalFs.ts / terminalPipeline.ts — ls/cd/cat/pipes/      │
+│      redirects, resolved client-side against the VFS               │
+│    lib/pythonRuntime.ts → python.worker.ts (Pyodide, CPython in    │
+│      WASM; signed-in only, lazy, self-hosted from public/pyodide)  │
 └──────────┬──────────┬──────────┬───────────────┬───────────────────┘
            ▼          ▼          ▼               ▼
     /api/chat   /api/exec  /api/browser-  /api/guest-usage

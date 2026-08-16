@@ -69,6 +69,33 @@ describe('TerminalApp', () => {
     expect(mockPublish).toHaveBeenCalledWith('vm.spawn', expect.objectContaining({ cmd: 'whoami' }));
   });
 
+  // The command line was split on spaces, so a quoted argument arrived as
+  // two tokens with the quote characters still attached. `write notes.md
+  // "hello world"` stored the literal string `"hello` — quoting silently
+  // corrupted the file it wrote. Found by running it, not by reading it.
+  it('parses quoted arguments as one token, without the quotes', () => {
+    render(<TerminalApp />);
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'whoami "hello world"' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(mockPublish).toHaveBeenCalledWith(
+      'vm.spawn',
+      expect.objectContaining({ cmd: 'whoami', args: ['hello world'] })
+    );
+  });
+
+  // Python is handled by the in-browser Pyodide worker. If it ever reached
+  // vm.spawn it would be sent to /api/exec, where there is no interpreter.
+  it('never sends python or pip to the server', () => {
+    render(<TerminalApp />);
+    const input = screen.getByRole('textbox');
+    for (const cmd of ['python -c "print(1)"', 'python3 x.py', 'pip list']) {
+      fireEvent.change(input, { target: { value: cmd } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+    }
+    expect(mockPublish).not.toHaveBeenCalledWith('vm.spawn', expect.anything());
+  });
+
   // Ctrl+C must abort the real request, not just hide the indicator — an
   // uncancelled fetch keeps consuming budget and can still emit output.
   it('Ctrl+C publishes vm.cancel for the in-flight request', () => {
