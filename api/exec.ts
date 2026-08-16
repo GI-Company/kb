@@ -65,7 +65,7 @@ export const ALLOWED_COMMANDS = new Set([
 
 // Real network access — see the file-header comment above. Handled before
 // the coreutils allowlist/sandbox path entirely, not shelled out.
-const NETWORK_COMMANDS = new Set(['curl', 'dig', 'nslookup', 'ping']);
+export const NETWORK_COMMANDS = new Set(['curl', 'dig', 'nslookup', 'ping']);
 
 const DANGEROUS_CHARS = /[&|;`$()<>]/;
 const EXEC_TIMEOUT_MS = 9000; // stay under the 10s function budget
@@ -127,6 +127,9 @@ export default async function handler(req: any, res: any) {
         `  correct <label>        the last classify was wrong; teach it the right one\n` +
         `  train --from-corrections <name>   retrain a saved classifier on its corrections\n` +
         `  correct/train are not pipeline stages — they mutate a saved model, not a stream.\n\n` +
+        `Meta:\n` +
+        `  can <command>          what a command needs, and whether that's available right now\n` +
+        `  policy                 the same thing, summarized for this session\n\n` +
         `Composition (piped and redirected in your browser, never sent to the server):\n` +
         `  cmd | cmd   cmd > file   cmd >> file      (no &&, ||, ; or globbing)\n\n` +
         `Sandboxed commands (fresh temp dir per run, nothing persists):\n` +

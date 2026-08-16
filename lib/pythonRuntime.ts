@@ -242,6 +242,9 @@ class PythonRuntime {
 
 export const pythonRuntime = new PythonRuntime();
 
+/** Handled entirely by this module's worker — never sent to /api/exec. */
+export const PYTHON_COMMANDS = new Set(['python', 'python3', 'pip']);
+
 export const PYTHON_USAGE: Record<string, string> = {
   python: 'Usage: python -c "<code>"  |  python <file.py>',
   pip: 'Usage: pip install <package> [package...]  |  pip list',

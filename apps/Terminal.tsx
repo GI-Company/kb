@@ -7,8 +7,9 @@ import { getCurrentUserId } from '../lib/auth';
 // Imported for its types and the small gate/usage constants only — the
 // 13MB Pyodide runtime is behind a dynamic import inside pythonRuntime and
 // is not fetched until someone actually types `python`.
-import { pythonRuntime, PYTHON_USAGE, GUEST_MESSAGE } from '../lib/pythonRuntime';
+import { pythonRuntime, PYTHON_USAGE, GUEST_MESSAGE, PYTHON_COMMANDS } from '../lib/pythonRuntime';
 import { INTEL_COMMANDS, TRAINING_COMMANDS, runIntelCommand } from '../lib/terminalIntel';
+import { META_COMMANDS, runMetaCommand } from '../lib/terminalMeta';
 
 /**
  * Commands that write or delete. A natural-language translation of one of
@@ -16,9 +17,6 @@ import { INTEL_COMMANDS, TRAINING_COMMANDS, runIntelCommand } from '../lib/termi
  * sys.terminal.intent:ack handler.
  */
 const MUTATING_COMMANDS = new Set(['rm', 'mv', 'cp', 'write', 'mkdir', 'touch']);
-
-/** Handled by the Pyodide worker, never sent to /api/exec. */
-const PYTHON_COMMANDS = new Set(['python', 'python3', 'pip']);
 
 interface Line {
   id: string;
@@ -93,7 +91,7 @@ export const TerminalApp: React.FC = () => {
     let matches: string[] = [];
     let dirPrefix = '';
     if (isCommandPosition) {
-      const known = [...VFS_COMMANDS, ...PIPE_AWARE_COMMANDS, ...PYTHON_COMMANDS, ...INTEL_COMMANDS, ...TRAINING_COMMANDS, 'clear', 'help', 'render', 'curl', 'dig', 'ping'];
+      const known = [...VFS_COMMANDS, ...PIPE_AWARE_COMMANDS, ...PYTHON_COMMANDS, ...INTEL_COMMANDS, ...TRAINING_COMMANDS, ...META_COMMANDS, 'clear', 'help', 'render', 'curl', 'dig', 'ping'];
       matches = [...new Set(known)].filter(c => c.startsWith(partial)).sort();
     } else {
       const found = await completePath(cwd, partial, userId);
@@ -388,6 +386,13 @@ export const TerminalApp: React.FC = () => {
         // classify/explain/trace — local model and bus, no network. See
         // BUILTINS.md for the contract these implement.
         runIntelCommand(command, args, { cwd, userId }).then(result => {
+          emit(result.stderr, true);
+          emit(result.stdout, false);
+        });
+      } else if (META_COMMANDS.has(command)) {
+        // can/policy answer instantly from static data plus one session
+        // check — no running indicator needed.
+        runMetaCommand(command, args).then(result => {
           emit(result.stderr, true);
           emit(result.stdout, false);
         });

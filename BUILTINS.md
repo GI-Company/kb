@@ -72,6 +72,14 @@ v1 makes it one table.
 | `model:cloud` | Calls Groq via `/api/chat` | rate limit |
 | `python` | Boots Pyodide | signed-in |
 | `net` | Leaves the origin | signed-in + SSRF guard |
+| `exec` | Runs in the server's disposable per-request jail | rate limit |
+
+`exec` was added while building `can`/`policy`, not designed up front: the
+~27 coreutils in `api/exec.ts`'s allowlist (`ls`, `wc`, `date`, ...) didn't
+fit any of the other six. They're the opposite of `vfs` in the property
+that matters most — nothing they touch persists, and they never see the
+user's real files — so folding them into `vfs` would have been the same
+kind of lie a stale capability table is meant to prevent.
 
 This is what makes `can classify` and `policy` answerable, and it is the
 honest version of "root": not a privilege level, a declared surface.
