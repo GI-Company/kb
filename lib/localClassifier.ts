@@ -25,6 +25,7 @@
 import { CharTokenizer } from '../src/bnlm/tokenizer.js';
 import { BNLMClassifier, padBatch } from '../src/bnlm/classifier.js';
 import { Adam } from '../src/bnlm/optim.js';
+import { classifierRegistry, SavedClassifierMeta } from './classifierRegistry';
 
 export interface LabeledExample {
   text: string;
@@ -118,6 +119,8 @@ class LocalClassifierService {
   private labels: string[] = [];
   private config: ClassifierConfig = { ...DEFAULT_CLASSIFIER_CONFIG };
   private encoded: { ids: Int32Array; label: number }[] = [];
+  /** Kept alongside the encoded form so a saved classifier stays inspectable and retrainable. */
+  private examples: LabeledExample[] = [];
 
   get isReady(): boolean {
     return !!this.model && !!this.tokenizer;
@@ -156,6 +159,7 @@ class LocalClassifierService {
     const tokenizer = new CharTokenizer(examples.map(e => e.text).join('\n'));
     const labelIndex = new Map(labels.map((l, i) => [l, i]));
 
+    this.examples = [...examples];
     this.encoded = examples.map(e => ({
       ids: tokenizer.encode(e.text),
       label: labelIndex.get(e.label)!,
@@ -261,6 +265,86 @@ class LocalClassifierService {
       throw new Error('None of that input\'s characters appear in the training data, so there is nothing to classify.');
     }
     return known;
+  }
+
+  /**
+   * Persist the trained classifier under a name so it survives a reload.
+   * Training costs ~20s and several Groq calls to build a dataset; without
+   * this that is re-paid every session, which defeats the point of a local
+   * specialist being cheap after the first time.
+   *
+   * `heldOutAccuracy` is stored when the caller has measured it, because
+   * training accuracy alone has already proven misleading here (100% train,
+   * 33% held-out on the first attempt).
+   */
+  async saveAs(name: string, heldOutAccuracy?: number): Promise<void> {
+    if (!this.model || !this.tokenizer) throw new Error('No classifier has been trained yet in this tab.');
+    if (!name.trim()) throw new Error('Give the classifier a name to save it under.');
+
+    const params = this.model.parameters();
+    await classifierRegistry.save({
+      name: name.trim(),
+      savedAt: new Date().toISOString(),
+      labels: [...this.labels],
+      paramCount: this.model.paramCount(),
+      vocabSize: this.tokenizer.vocabSize,
+      exampleCount: this.encoded.length,
+      heldOutAccuracy,
+      config: this.config,
+      vocabChars: this.tokenizer.itos.join(''),
+      examples: [...this.examples],
+      paramShapes: params.map((p: any) => p.shape),
+      paramBuffers: params.map((p: any) =>
+        p.data.buffer.slice(p.data.byteOffset, p.data.byteOffset + p.data.byteLength)
+      ),
+    });
+  }
+
+  async listSaved(): Promise<SavedClassifierMeta[]> {
+    return classifierRegistry.list();
+  }
+
+  async deleteSaved(name: string): Promise<void> {
+    return classifierRegistry.remove(name);
+  }
+
+  /** Restores a saved classifier, ready to predict immediately — no retraining. */
+  async loadSaved(name: string): Promise<{ labels: string[]; paramCount: number; exampleCount: number }> {
+    const record = await classifierRegistry.load(name);
+    if (!record) throw new Error(`No saved classifier named "${name}".`);
+
+    const tokenizer = new CharTokenizer(record.vocabChars);
+    const model = new BNLMClassifier(tokenizer.vocabSize, record.labels.length, {
+      dModel: record.config.dModel,
+      numLayers: record.config.numLayers,
+      numHeads: record.config.numHeads,
+      contextLen: record.config.contextLen,
+      mixerType: record.config.mixerType,
+    });
+
+    const params = model.parameters();
+    if (params.length !== record.paramBuffers.length) {
+      throw new Error(
+        `Saved classifier "${name}" doesn't match the current engine (expected ${params.length} ` +
+        `parameter tensors, found ${record.paramBuffers.length}). It was saved by an older build.`
+      );
+    }
+    params.forEach((p: any, i: number) => p.data.set(new Float32Array(record.paramBuffers[i])));
+
+    this.tokenizer = tokenizer;
+    this.model = model;
+    this.labels = [...record.labels];
+    this.config = record.config;
+    this.examples = [...record.examples];
+    this.optimizer = new Adam(model.parameters(), { lr: record.config.lr });
+    // Re-encode so evaluate() and further training work against the restored
+    // vocabulary rather than a stale one.
+    const labelIndex = new Map(this.labels.map((l, i) => [l, i]));
+    this.encoded = record.examples
+      .filter(e => labelIndex.has(e.label))
+      .map(e => ({ ids: tokenizer.encode(e.text), label: labelIndex.get(e.label)! }));
+
+    return { labels: [...this.labels], paramCount: model.paramCount(), exampleCount: this.encoded.length };
   }
 
   async predict(text: string): Promise<PredictResult> {
