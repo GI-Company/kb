@@ -196,3 +196,72 @@ describe('head/tail line counts', () => {
     expect(TEXT_FILTERS.head(input, []).stdout.trim().split('\n')).toHaveLength(10);
   });
 });
+
+// The bug class this whole group exists for: a flag the implementation
+// doesn't have used to match nothing and produce a confident wrong answer.
+describe('flags are honoured or refused, never ignored', () => {
+  it('sorts numerically with -n instead of lexically', () => {
+    const input = '9\n10\n1\n';
+    expect(TEXT_FILTERS.sort(input, ['-n']).stdout).toBe('1\n9\n10\n');
+    // The old substring check made this pass while sorting as text.
+    expect(TEXT_FILTERS.sort(input, []).stdout).toBe('1\n10\n9\n');
+  });
+
+  it('sorts human sizes with -h', () => {
+    expect(TEXT_FILTERS.sort('2K\n1M\n900\n', ['-h']).stdout).toBe('900\n2K\n1M\n');
+  });
+
+  it('combines -n with -r', () => {
+    expect(TEXT_FILTERS.sort('9\n10\n1\n', ['-rn']).stdout).toBe('10\n9\n1\n');
+  });
+
+  it('refuses a flag it does not implement rather than dropping it', () => {
+    const result = TEXT_FILTERS.sort('b\na\n', ['-k5']);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/unsupported option/);
+    expect(result.stdout).toBe('');
+  });
+
+  it('refuses unknown flags on the older filters too', () => {
+    expect(TEXT_FILTERS.grep('a\n', ['-r', 'a']).code).toBe(1);
+    expect(TEXT_FILTERS.head('a\n', ['-q']).code).toBe(1);
+    // ...without breaking the ones they do support.
+    expect(TEXT_FILTERS.grep('abc\nxyz\n', ['-i', 'ABC']).stdout).toBe('abc\n');
+    expect(TEXT_FILTERS.head('a\nb\nc\n', ['-2']).stdout).toBe('a\nb\n');
+  });
+});
+
+describe('sed / cut / tr', () => {
+  it('substitutes, with and without /g', () => {
+    expect(TEXT_FILTERS.sed('a a a\n', ['s/a/b/']).stdout).toBe('b a a\n');
+    expect(TEXT_FILTERS.sed('a a a\n', ['s/a/b/g']).stdout).toBe('b b b\n');
+  });
+
+  it('accepts any delimiter and real regexes', () => {
+    expect(TEXT_FILTERS.sed('x/y\n', ['s|/|-|']).stdout).toBe('x-y\n');
+    expect(TEXT_FILTERS.sed('error: one\nok: two\n', ['s/^error.*/HIT/']).stdout).toBe('HIT\nok: two\n');
+  });
+
+  it('reports a malformed script instead of passing text through', () => {
+    expect(TEXT_FILTERS.sed('a\n', ['d']).code).toBe(1);
+    expect(TEXT_FILTERS.sed('a\n', ['s/[/b/']).stderr).toMatch(/bad regex/);
+    expect(TEXT_FILTERS.sed('a\n', ['s/a/b/x']).stderr).toMatch(/unsupported modifier/);
+  });
+
+  it('cuts fields, singly and by range', () => {
+    const csv = 'a,b,c,d\n1,2,3,4\n';
+    expect(TEXT_FILTERS.cut(csv, ['-d', ',', '-f', '2']).stdout).toBe('b\n2\n');
+    expect(TEXT_FILTERS.cut(csv, ['-d', ',', '-f', '1,3']).stdout).toBe('a,c\n1,3\n');
+    expect(TEXT_FILTERS.cut(csv, ['-d', ',', '-f', '2-4']).stdout).toBe('b,c,d\n2,3,4\n');
+  });
+
+  it('rejects a bad field list', () => {
+    expect(TEXT_FILTERS.cut('a,b\n', ['-d', ',', '-f', 'x']).code).toBe(1);
+    expect(TEXT_FILTERS.cut('a,b\n', ['-d', ',']).stderr).toMatch(/missing field list/);
+  });
+
+  it('translates and deletes characters, expanding ranges', () => {
+    expect(TEXT_FILTERS.tr('abc\n', ['a-z', 'A-Z']).stdout).toBe('ABC\n');
+    expect(TEXT_FILTERS.tr('a1b2\n', ['-d', '0-9']).stdout).toBe('ab\n');
+  });
+});

@@ -110,8 +110,14 @@ export default async function handler(req: any, res: any) {
         `  Full standard library; package installs are not enabled (see pip list).\n` +
         `  Files in the current directory are readable with open().\n` +
         `  First run downloads the ~13 MB runtime; Ctrl+C kills it outright.\n\n` +
-        `Shell composition (piped and redirected in your browser, never sent to the server):\n` +
-        `  cmd | grep/wc/head/tail/sort/uniq   cmd > file   cmd >> file\n\n` +
+        `Text processing (runs in your browser, on your real files):\n` +
+        `  grep wc head tail sort uniq sed cut tr\n` +
+        `  Use them on a file directly (wc -l notes.md) or in a pipe.\n` +
+        `  These are deliberate subsets — an unsupported flag is refused, not ignored.\n` +
+        `  sed does s/pattern/replacement/[g] only. grep matches substrings, not regexes.\n` +
+        `  awk is NOT in this set: it only runs server-side, where your files do not exist.\n\n` +
+        `Composition (piped and redirected in your browser, never sent to the server):\n` +
+        `  cmd | cmd   cmd > file   cmd >> file      (no &&, ||, ; or globbing)\n\n` +
         `Sandboxed commands (fresh temp dir per run, nothing persists):\n` +
         `  ${[...ALLOWED_COMMANDS].sort().join(', ')}\n\n` +
         `Network commands (signed-in accounts only):\n` +
