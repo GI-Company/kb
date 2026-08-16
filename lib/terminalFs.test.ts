@@ -34,7 +34,7 @@ vi.mock('./vfs', () => ({
   },
 }));
 
-import { runFsCommand, cwdPath, ROOT_CWD, Cwd } from './terminalFs';
+import { runFsCommand, cwdPath, ROOT_CWD, Cwd, writeBackFiles } from './terminalFs';
 
 const USER = 'guest';
 
@@ -189,5 +189,65 @@ describe('write terminates its line', () => {
     await runFsCommand('write', ['nl.txt', 'already\n'], ctx);
     const { result } = await runFsCommand('cat', ['nl.txt'], ctx);
     expect(result.stdout).toBe('already\n');
+  });
+});
+
+describe('writeBackFiles — the Python write-back bridge', () => {
+  beforeEach(() => { nodes = {}; seq = 0; });
+
+  it('writes a brand new file the script created', async () => {
+    const original = { 'notes.md': 'hi' };
+    const finalState = { 'notes.md': 'hi', 'out.txt': 'new content' };
+    const { written } = await writeBackFiles(ROOT_CWD, USER, original, finalState);
+
+    expect(written).toEqual(['out.txt']);
+    const created = Object.values(nodes).find(n => n.name === 'out.txt');
+    expect(created?.content).toBe('new content');
+  });
+
+  it('updates an existing file the script modified in place', async () => {
+    nodes['existing-notes'] = { id: 'existing-notes', name: 'notes.md', type: 'file', content: 'original', parentId: 'home' };
+    const original = { 'notes.md': 'original' };
+    const finalState = { 'notes.md': 'changed by python' };
+
+    const { written } = await writeBackFiles(ROOT_CWD, USER, original, finalState);
+
+    expect(written).toEqual(['notes.md']);
+    expect(nodes['existing-notes'].content).toBe('changed by python');
+  });
+
+  // The whole point: a script that reads three files and touches none of
+  // them should write nothing back, not re-save identical content.
+  it('writes nothing when nothing actually changed', async () => {
+    nodes['n1'] = { id: 'n1', name: 'notes.md', type: 'file', content: 'same', parentId: 'home' };
+    const original = { 'notes.md': 'same' };
+    const finalState = { 'notes.md': 'same' };
+
+    const { written } = await writeBackFiles(ROOT_CWD, USER, original, finalState);
+    expect(written).toEqual([]);
+    expect(nodes['n1'].content).toBe('same');
+  });
+
+  it('does not write over a name that collides with an existing directory', async () => {
+    nodes['existing-dir'] = { id: 'existing-dir', name: 'projects', type: 'directory', content: '', parentId: 'home' };
+    const original = {};
+    const finalState = { projects: 'this should not become file content' };
+
+    const { written } = await writeBackFiles(ROOT_CWD, USER, original, finalState);
+    expect(written).toEqual([]);
+    expect(nodes['existing-dir'].type).toBe('directory');
+  });
+
+  it('writes several changed files in one call', async () => {
+    // A non-generated id, distinct from the mock's own n1/n2/... counter —
+    // otherwise the create() call below for c.txt reuses 'n1' and silently
+    // overwrites this node instead of colliding loudly.
+    nodes['existing-a'] = { id: 'existing-a', name: 'a.txt', type: 'file', content: 'old-a', parentId: 'home' };
+    const original = { 'a.txt': 'old-a', 'b.txt': 'old-b' };
+    const finalState = { 'a.txt': 'new-a', 'b.txt': 'old-b', 'c.txt': 'brand new' };
+
+    const { written } = await writeBackFiles(ROOT_CWD, USER, original, finalState);
+    expect(written.sort()).toEqual(['a.txt', 'c.txt']);
+    expect(nodes['existing-a'].content).toBe('new-a');
   });
 });

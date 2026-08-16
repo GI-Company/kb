@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { kernel } from '../services/kernel';
 import { Envelope } from '../types';
-import { VFS_COMMANDS, runFsCommand, cwdPath, ROOT_CWD, Cwd, CommandResult, completePath, commonPrefix, readDirFiles } from '../lib/terminalFs';
+import { VFS_COMMANDS, runFsCommand, cwdPath, ROOT_CWD, Cwd, CommandResult, completePath, commonPrefix, readDirFiles, writeBackFiles } from '../lib/terminalFs';
 import { hasPipelineSyntax, parseLine, runPipeline, PIPE_AWARE_COMMANDS, TEXT_FILTERS, tokenize } from '../lib/terminalPipeline';
 import { getCurrentUserId } from '../lib/auth';
 // Imported for its types and the small gate/usage constants only — the
@@ -166,7 +166,22 @@ export const TerminalApp: React.FC = () => {
     // makes open("notes.md") read the user's actual file. Piped input lands
     // on sys.stdin so `cat log.txt | python -c "..."` behaves as expected.
     const files = await readDirFiles(cwd, userId);
-    return pythonRuntime.run(code, files, text => append(text + '\n'), stdin);
+    const result = await pythonRuntime.run(code, files, text => append(text + '\n'), stdin);
+
+    // Write-back only on a real success (code 0, and files present — a
+    // Ctrl+C/timeout result has neither). Anything the script wrote is
+    // already gone if it got here any other way: the worker only computes
+    // and sends the post-run file state on its own ok:true path, so a
+    // failed or killed run has nothing for this to stage in the first
+    // place — not a check this function performs so much as a fact
+    // already true about what result.files contains.
+    if (result.code === 0 && result.files) {
+      const { written } = await writeBackFiles(cwd, userId, files, result.files);
+      if (written.length) {
+        result.stdout += `${written.length} file${written.length === 1 ? '' : 's'} written: ${written.join(', ')}\n`;
+      }
+    }
+    return result;
   }, [append, cwd, userId]);
 
   const runPython = useCallback(async (command: string, args: string[], rawLine: string) => {

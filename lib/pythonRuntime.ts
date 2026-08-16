@@ -19,6 +19,13 @@ export interface PythonResult {
   stdout: string;
   stderr: string;
   code: number;
+  /**
+   * Every file in the workspace directory as Pyodide's FS held it when the
+   * run finished — only present on a successful run() call. The caller
+   * diffs this against what it seeded in and writes back only what
+   * actually changed; see lib/terminalFs.ts's writeBackFiles.
+   */
+  files?: Record<string, string>;
 }
 
 /** Progress messages during the first load, which is slow enough to need them. */
@@ -172,7 +179,7 @@ class PythonRuntime {
         const msg = event.data;
         if (msg?.type === 'status') { onStatus?.(msg.text); return; }
         if (msg?.type === 'done') {
-          finish({ stdout: msg.stdout || '', stderr: msg.stderr || '', code: msg.ok ? 0 : 1 });
+          finish({ stdout: msg.stdout || '', stderr: msg.stderr || '', code: msg.ok ? 0 : 1, files: msg.files });
         }
       };
 

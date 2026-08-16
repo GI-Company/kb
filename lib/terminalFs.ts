@@ -22,6 +22,7 @@
 
 import { vfs } from './vfs';
 import { FileNode } from '../types';
+import { VfsOverlay } from './vfsOverlay';
 
 export interface CommandResult {
   stdout: string;
@@ -369,6 +370,58 @@ export async function readDirFiles(
     files[child.name] = content;
   }
   return files;
+}
+
+/**
+ * The write half of the Python bridge readDirFiles is the read half of.
+ *
+ * `original` is what readDirFiles handed to Python at the start of the
+ * run; `finalState` is every file Pyodide's FS held when the run finished
+ * (lib/python.worker.ts's collectWorkspaceFiles, scoped to the same one
+ * flat directory readDirFiles reads from — a script that mkdir()'d a
+ * subdirectory already had that silently excluded before this reaches
+ * here). Only names whose content actually changed get written — a run
+ * that read three files and touched none of them writes nothing back.
+ *
+ * Stages through lib/vfsOverlay.ts, the same primitive kernos.exec's VFS
+ * writes use, and commits in one batch — so this should only be called
+ * once the caller already knows the run succeeded. There is no discard()
+ * call here for the failure case because there is nothing to discard: the
+ * overlay is never populated unless this function runs, and this function
+ * is the caller's choice, not something invoked speculatively.
+ */
+export async function writeBackFiles(
+  cwd: Cwd,
+  userId: string,
+  original: Record<string, string>,
+  finalState: Record<string, string>
+): Promise<{ written: string[] }> {
+  const changed = Object.entries(finalState).filter(([name, content]) => original[name] !== content);
+  if (changed.length === 0) return { written: [] };
+
+  const existing = await vfs.list(dirId(cwd), userId);
+  const byName = new Map(existing.map(n => [n.name, n]));
+  const overlay = new VfsOverlay(userId);
+  const written: string[] = [];
+
+  for (const [name, content] of changed) {
+    const node = byName.get(name);
+    if (node && node.type === 'file') {
+      await overlay.write(node.id, content);
+      written.push(name);
+    } else if (!node) {
+      await overlay.create(dirId(cwd), name, 'file', content);
+      written.push(name);
+    }
+    // A name colliding with an existing DIRECTORY node is silently
+    // skipped — vfs.ts has no operation for "replace a directory with a
+    // file," and a script naming its output identically to one of the
+    // user's real subdirectories is an edge case not worth failing an
+    // otherwise-successful run over.
+  }
+
+  await overlay.commit();
+  return { written };
 }
 
 /** Longest common prefix, so Tab can advance partway on an ambiguous match. */

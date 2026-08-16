@@ -60,6 +60,44 @@ async function ensurePyodide(): Promise<any> {
   return loading;
 }
 
+// Mirrors readDirFiles' read-side cap in lib/terminalFs.ts — the write
+// bridge shouldn't be more permissive than the one that seeds it.
+const WRITE_BACK_MAX_BYTES = 2_000_000;
+
+/**
+ * Every regular file in Pyodide's CWD after a run, for the host to diff
+ * against what it seeded in. Scoped to exactly this one flat directory —
+ * matching readDirFiles' own scope — so a script that calls os.mkdir() and
+ * writes inside it gets that work silently dropped, not durably written
+ * somewhere the read bridge never showed it.
+ */
+function collectWorkspaceFiles(py: any): { files: Record<string, string>; skipped: string[] } {
+  const entries: string[] = py.FS.readdir('.');
+  const files: Record<string, string> = {};
+  const skipped: string[] = [];
+  let total = 0;
+
+  for (const name of entries) {
+    if (name === '.' || name === '..') continue;
+    const stat = py.FS.stat(name);
+    // Emscripten FS mode bits: S_IFDIR is octal 040000.
+    const isDir = (stat.mode & 0o170000) === 0o040000;
+    if (isDir) { skipped.push(`${name} (directory — only the flat workspace round-trips)`); continue; }
+
+    let content: string;
+    try {
+      content = py.FS.readFile(name, { encoding: 'utf8' });
+    } catch {
+      skipped.push(`${name} (not valid text)`);
+      continue;
+    }
+    total += content.length;
+    if (total > WRITE_BACK_MAX_BYTES) { skipped.push(`${name} (over the 2MB write-back cap)`); continue; }
+    files[name] = content;
+  }
+  return { files, skipped };
+}
+
 function drain() {
   const out = stdoutBuffer;
   const err = stderrBuffer;
@@ -117,7 +155,16 @@ self.onmessage = async (event: MessageEvent) => {
       // A bare expression's value is echoed like a REPL would; None is not,
       // since almost every statement evaluates to it.
       const repr = value === undefined || value === null ? '' : String(value) + '\n';
-      post({ type: 'done', ok: true, stdout: out + repr, stderr: errOut });
+
+      // Only collected on the success path — a script that raised gets no
+      // write-back at all, computed or otherwise. The host stages these
+      // into a VfsOverlay (lib/vfsOverlay.ts, the same primitive
+      // kernos.exec's VFS writes use) and only commits because this
+      // message says ok:true; nothing here is durable yet.
+      const { files: workspaceFiles, skipped } = collectWorkspaceFiles(py);
+      const skipNote = skipped.length ? `\n${skipped.map(s => `(not written back: ${s})`).join('\n')}\n` : '';
+
+      post({ type: 'done', ok: true, stdout: out + repr, stderr: errOut + skipNote, files: workspaceFiles });
       return;
     }
 
