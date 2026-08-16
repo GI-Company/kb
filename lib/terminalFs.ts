@@ -118,7 +118,16 @@ export interface FsContext {
   userId: string;
 }
 
-/** Commands handled here rather than by /api/exec. */
+/**
+ * Commands the TERMINAL handles here rather than sending to /api/exec.
+ *
+ * These names are shadowed only for the terminal, not globally, so do NOT
+ * "clean up" api/exec.ts's allowlist by removing them. lib/taskEngine.ts
+ * calls /api/exec directly for DAG shell nodes, bypassing this file
+ * entirely — and the built-in demo pipeline's build step is `ls -la`.
+ * Dropping ls/cat/mkdir/touch/cp/mv from the server allowlist would break
+ * task workflows while looking like dead-code removal.
+ */
 export const VFS_COMMANDS = new Set([
   'ls', 'cat', 'cd', 'pwd', 'mkdir', 'touch', 'rm', 'mv', 'cp', 'write',
 ]);
