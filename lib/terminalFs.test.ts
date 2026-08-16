@@ -171,3 +171,23 @@ describe('VFS-backed terminal commands', () => {
     expect(cwdPath(cwd)).toBe('/');
   });
 });
+
+// `write q.txt "one"` then `echo two >> q.txt` produced "onetwo": one line
+// where the user wrote two. Every line-oriented command downstream then saw
+// a single mangled record. Found by piping a written file into classify.
+describe('write terminates its line', () => {
+  it('appends after a write without gluing the lines together', async () => {
+    const ctx = { cwd: [] as any, userId: 'guest' };
+    await runFsCommand('write', ['glue.txt', 'one'], ctx);
+    await runFsCommand('write', ['-a', 'glue.txt', 'two\n'], ctx);
+    const { result } = await runFsCommand('cat', ['glue.txt'], ctx);
+    expect(result.stdout).toBe('one\ntwo\n');
+  });
+
+  it('does not add a second newline to content that already ends with one', async () => {
+    const ctx = { cwd: [] as any, userId: 'guest' };
+    await runFsCommand('write', ['nl.txt', 'already\n'], ctx);
+    const { result } = await runFsCommand('cat', ['nl.txt'], ctx);
+    expect(result.stdout).toBe('already\n');
+  });
+});

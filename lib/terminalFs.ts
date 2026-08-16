@@ -44,6 +44,11 @@ function dirId(cwd: Cwd): string {
   return cwd.length ? cwd[cwd.length - 1].id : ROOT_ID;
 }
 
+/** Text with exactly one trailing newline; empty stays empty. */
+function endWithNewline(text: string): string {
+  return text === '' || text.endsWith('\n') ? text : text + '\n';
+}
+
 function ok(stdout = ''): CommandResult {
   return { stdout, stderr: '', code: 0 };
 }
@@ -229,7 +234,12 @@ export async function runFsCommand(
     case 'write': {
       if (positional.length < 2) return keep(usageErr('write', 'needs a file and text'));
       const [target, ...rest] = positional;
-      const text = rest.join(' ');
+      // Text files end with a newline. Without this, `write q.txt "one"`
+      // followed by `echo two >> q.txt` produced "onetwo" — one line where
+      // the user wrote two, and every downstream line-oriented command
+      // (classify, wc, grep) then saw a single mangled record. Pipeline
+      // output already ends in \n, so this only fires for literal text.
+      const text = endWithNewline(rest.join(' '));
       const resolved = await resolveParent(cwd, target, userId);
       if (typeof resolved === 'string') return keep(err('write', resolved));
       const existing = await vfs.list(dirId(resolved.parent), userId);
@@ -239,7 +249,10 @@ export async function runFsCommand(
         // -a is what `>>` uses. Without it a redirect append would silently
         // overwrite, which is worse than failing — it destroys data.
         const append = flags.some(f => f.includes('a'));
-        const next = append ? (await vfs.read(match.id, userId)) + text : text;
+        // A file written by something other than `write` (the editor, say)
+        // may not be newline-terminated, so appending re-checks rather than
+        // trusting the invariant above.
+        const next = append ? endWithNewline(await vfs.read(match.id, userId)) + text : text;
         await vfs.write(match.id, next, userId);
       } else {
         await vfs.create(dirId(resolved.parent), resolved.name, 'file', userId, text);

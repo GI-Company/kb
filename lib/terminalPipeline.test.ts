@@ -265,3 +265,75 @@ describe('sed / cut / tr', () => {
     expect(TEXT_FILTERS.tr('a1b2\n', ['-d', '0-9']).stdout).toBe('ab\n');
   });
 });
+
+describe('pick / where', () => {
+  const records = [
+    '{"text":"list my files","label":"files","confidence":0.97}',
+    '{"text":"ping the host","label":"network","confidence":0.55}',
+  ].join('\n') + '\n';
+
+  it('extracts one field as bare values, so text filters still compose', () => {
+    expect(TEXT_FILTERS.pick(records, ['.label']).stdout).toBe('files\nnetwork\n');
+    expect(TEXT_FILTERS.pick(records, ['label']).stdout).toBe('files\nnetwork\n');
+  });
+
+  it('emits a record when several fields are picked, keeping the names', () => {
+    const out = TEXT_FILTERS.pick(records, ['.label', '.confidence']).stdout.trim().split('\n');
+    expect(JSON.parse(out[0])).toEqual({ label: 'files', confidence: 0.97 });
+  });
+
+  it('reads nested and indexed paths', () => {
+    const nested = '{"ranked":[{"label":"files"},{"label":"network"}]}\n';
+    expect(TEXT_FILTERS.pick(nested, ['.ranked.1.label']).stdout).toBe('network\n');
+  });
+
+  // The whole reason these exist: grep matches the line, not the field.
+  // `classify --json | grep network` matched a record labelled "model"
+  // because "network" appeared in its ranked array.
+  it('filters on the field, where grep would match the whole line', () => {
+    const noisy = '{"label":"model","ranked":[{"label":"network"}]}\n';
+    expect(TEXT_FILTERS.grep(noisy, ['network']).stdout).toBe(noisy);
+    expect(TEXT_FILTERS.where(noisy, ['.label', '=', 'network']).stdout).toBe('');
+  });
+
+  it('compares numerically when both sides are numbers', () => {
+    const kept = TEXT_FILTERS.where(records, ['.confidence', '>', '0.9']).stdout;
+    expect(JSON.parse(kept.trim()).label).toBe('files');
+  });
+
+  // `where .label > 5` should match nothing, not coerce its way to true.
+  it('does not coerce a non-numeric comparison into a match', () => {
+    expect(TEXT_FILTERS.where(records, ['.label', '>', '5']).stdout).toBe('');
+  });
+
+  it('supports substring matching with ~, case-insensitively', () => {
+    expect(TEXT_FILTERS.where(records, ['.text', '~', 'PING']).stdout.trim())
+      .toContain('ping the host');
+  });
+
+  // grep's convention, and pipelines read it the same way.
+  it('exits 1 when nothing matched', () => {
+    expect(TEXT_FILTERS.where(records, ['.label', '=', 'nope']).code).toBe(1);
+    expect(TEXT_FILTERS.where(records, ['.label', '=', 'files']).code).toBe(0);
+  });
+
+  it('refuses an unknown operator rather than matching nothing quietly', () => {
+    const r = TEXT_FILTERS.where(records, ['.label', '==', 'files']);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/unknown operator/);
+  });
+
+  // A filter that silently discards half its input is the same bug class as
+  // a flag that is silently ignored.
+  it('reports non-record lines instead of dropping them in silence', () => {
+    const mixed = 'not a record\n{"label":"files"}\n';
+    const r = TEXT_FILTERS.pick(mixed, ['.label']);
+    expect(r.stdout).toBe('files\n');
+    expect(r.stderr).toMatch(/skipped 1 line/);
+  });
+
+  it('needs a field and a comparison', () => {
+    expect(TEXT_FILTERS.pick('', []).code).toBe(1);
+    expect(TEXT_FILTERS.where('', ['.label']).code).toBe(1);
+  });
+});

@@ -112,6 +112,9 @@ export default async function handler(req: any, res: any) {
         `  First run downloads the ~13 MB runtime; Ctrl+C kills it outright.\n\n` +
         `Text processing (runs in your browser, on your real files):\n` +
         `  grep wc head tail sort uniq sed cut tr\n` +
+        `  pick <path>            field out of a JSON record   (pick .label)\n` +
+        `  where <path> <op> <v>  filter records by a field     (where .confidence > 0.9)\n` +
+        `  pick/where read the field, not the line — grep matches either.\n` +
         `  Use them on a file directly (wc -l notes.md) or in a pipe.\n` +
         `  These are deliberate subsets — an unsupported flag is refused, not ignored.\n` +
         `  sed does s/pattern/replacement/[g] only. grep matches substrings, not regexes.\n` +

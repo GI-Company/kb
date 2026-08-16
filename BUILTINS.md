@@ -41,8 +41,21 @@ in-process). It is cleaner in principle and it breaks `grep`, redirection,
 `>` into a file, and every filter already written. NDJSON keeps one wire
 format for humans, filters, and files.
 
-`pick` and `where` (the jq-shaped filters) are the natural follow-on and are
-out of scope here.
+`pick` and `where` are the field-aware filters that make this convention pay
+off, and they ship alongside these commands:
+
+```
+pick <path> [path...]     one path emits bare values; several emit a record
+where <path> <op> <value> ops: = != > < >= <= ~     exits 1 on no match
+```
+
+Paths are dotted, with an optional leading dot and numeric array indices:
+`.label`, `confidence`, `.ranked.0.label`.
+
+They exist because `grep` matches the line, not the field. `classify --json |
+grep network` returns a record labelled `model` whose `ranked` array merely
+mentions network — correct grep behaviour, wrong answer to the question
+being asked. `where .label = network` asks the real question.
 
 ## Decision 2 — capabilities are declared, not assumed
 

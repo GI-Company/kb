@@ -218,6 +218,78 @@ function lineCount(args: string[], fallback = 10): number | null {
   return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
+/**
+ * Reads a dotted path out of a record: `.label`, `label`, `ranked.0.label`.
+ *
+ * The leading dot is optional so both jq muscle memory and plain field
+ * names work; array indices are just numeric segments.
+ */
+function readPath(record: unknown, path: string): unknown {
+  let current: any = record;
+  for (const segment of path.replace(/^\./, '').split('.')) {
+    if (current == null) return undefined;
+    current = current[segment];
+  }
+  return current;
+}
+
+/** A value as it should appear on stdout: strings bare, everything else JSON. */
+function render(value: unknown): string {
+  if (value === undefined) return '';
+  return typeof value === 'string' ? value : JSON.stringify(value);
+}
+
+interface RecordScan {
+  records: { line: string; record: any }[];
+  /**
+   * Lines that were not records. Counted rather than dropped: a filter that
+   * silently discards half its input is the same class of bug as a flag that
+   * is silently ignored.
+   */
+  skipped: number;
+}
+
+function scanRecords(stdin: string): RecordScan {
+  const records: RecordScan['records'] = [];
+  let skipped = 0;
+  for (const line of lines(stdin)) {
+    if (line.trim() === '') continue;
+    try {
+      const record = JSON.parse(line);
+      if (record && typeof record === 'object') { records.push({ line, record }); continue; }
+    } catch { /* not a record */ }
+    skipped++;
+  }
+  return { records, skipped };
+}
+
+const skippedNote = (command: string, skipped: number) =>
+  skipped ? `${command}: skipped ${skipped} line${skipped === 1 ? '' : 's'} that were not JSON records\n` : '';
+
+/**
+ * `where`'s operators. Numeric when both sides are numbers, string
+ * otherwise — so `where .confidence > 0.9` and `where .label = files` both
+ * do the obvious thing without a type annotation.
+ */
+const COMPARATORS: Record<string, (actual: unknown, expected: string) => boolean> = {
+  '=': (a, e) => String(a) === e,
+  '!=': (a, e) => String(a) !== e,
+  '~': (a, e) => String(a ?? '').toLowerCase().includes(e.toLowerCase()),
+  '>': (a, e) => numeric(a, e, (x, y) => x > y),
+  '<': (a, e) => numeric(a, e, (x, y) => x < y),
+  '>=': (a, e) => numeric(a, e, (x, y) => x >= y),
+  '<=': (a, e) => numeric(a, e, (x, y) => x <= y),
+};
+
+function numeric(actual: unknown, expected: string, compare: (a: number, b: number) => boolean): boolean {
+  const a = Number(actual);
+  const b = Number(expected);
+  // A non-numeric comparison is false rather than a coerced surprise:
+  // `where .label > 5` should match nothing, not everything.
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+  return compare(a, b);
+}
+
 export const TEXT_FILTERS: Record<string, Filter> = {
   grep: (stdin, args) => {
     const err = unknownFlag('grep', args, 'iv');
@@ -364,6 +436,46 @@ export const TEXT_FILTERS: Record<string, Filter> = {
       }
     }
     return ok(join(out));
+  },
+
+  // Field-aware filters over NDJSON. These exist because `grep` reads the
+  // whole line: `classify --json | grep network` matches a record labelled
+  // "model" whose ranked array merely mentions network. Correct grep
+  // behaviour, wrong answer to the question being asked.
+  pick: (stdin, args) => {
+    const err = unknownFlag('pick', args, '');
+    if (err) return err;
+    const paths = args.filter(a => !a.startsWith('-'));
+    if (paths.length === 0) return bad('pick', 'missing field\nUsage: pick <path> [path...]   e.g. pick .label .confidence');
+
+    const { records, skipped } = scanRecords(stdin);
+    // One path emits bare values, so it composes with the text filters;
+    // several emit a record, so the field names survive.
+    const out = records.map(({ record }) =>
+      paths.length === 1
+        ? render(readPath(record, paths[0]))
+        : JSON.stringify(Object.fromEntries(paths.map(p => [p.replace(/^\./, ''), readPath(record, p)])))
+    );
+    return { stdout: join(out), stderr: skippedNote('pick', skipped), code: 0 };
+  },
+
+  where: (stdin, args) => {
+    const err = unknownFlag('where', args, '');
+    if (err) return err;
+    const [path, op, ...rest] = args.filter(a => !a.startsWith('-'));
+    const value = rest.join(' ');
+    if (!path || !op) {
+      return bad('where', 'missing comparison\nUsage: where <path> <op> <value>   ops: = != > < >= <= ~');
+    }
+    if (!COMPARATORS[op]) {
+      return bad('where', `unknown operator "${op}"\nSupported: ${Object.keys(COMPARATORS).join(' ')}`);
+    }
+
+    const { records, skipped } = scanRecords(stdin);
+    const kept = records.filter(({ record }) => COMPARATORS[op](readPath(record, path), value));
+    // Exit 1 on no matches, the way grep does — pipelines and humans both
+    // read that as "nothing here" rather than as a failure.
+    return { stdout: join(kept.map(k => k.line)), stderr: skippedNote('where', skipped), code: kept.length ? 0 : 1 };
   },
 
   // Reads its arguments, not stdin — the one source stage that needs no file.
