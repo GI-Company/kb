@@ -28,7 +28,7 @@ export const TerminalApp: React.FC = () => {
   // What's currently in flight, so the prompt can show progress instead of
   // going silent. `render` in particular is a real headless-browser page
   // load and can take many seconds — with no feedback that reads as a hang.
-  const [running, setRunning] = useState<{ label: string; startedAt: number } | null>(null);
+  const [running, setRunning] = useState<{ label: string; startedAt: number; reqId?: string } | null>(null);
   const [elapsedMs, setElapsedMs] = useState(0);
   // Filesystem commands run against the real VFS instead of the server's
   // throwaway jail, so a working directory finally means something and
@@ -101,6 +101,25 @@ export const TerminalApp: React.FC = () => {
   }, [input, cwd, userId]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Ctrl+C. Aborts an in-flight request through the kernel; with nothing
+    // running it just discards the current line, like a real shell.
+    if (e.key === 'c' && e.ctrlKey) {
+      e.preventDefault();
+      if (running?.reqId) {
+        kernel.publish('vm.cancel', { _request_id: running.reqId });
+      } else {
+        setLines(prev => [...prev, {
+          id: Math.random().toString(),
+          type: 'output',
+          content: (input ? input : '') + '^C\n',
+          time: new Date().toLocaleTimeString()
+        }]);
+      }
+      setInput('');
+      setHistoryIndex(null);
+      return;
+    }
+
     if (e.key === 'Tab') {
       e.preventDefault();
       void completeInput();
@@ -234,14 +253,14 @@ export const TerminalApp: React.FC = () => {
             time: new Date().toLocaleTimeString()
           }]);
         } else {
-          setRunning({ label: cmd, startedAt: Date.now() });
+          setRunning({ label: cmd, startedAt: Date.now(), reqId });
           kernel.publish('vm.render', { _request_id: reqId, url, mode });
         }
       } else {
         // Straight to the sandbox. The speculative "shadow jail" this used
         // to consult was cut along with the Go backend and always answered
         // "miss", so it only ever added a round trip before every command.
-        setRunning({ label: cmd, startedAt: Date.now() });
+        setRunning({ label: cmd, startedAt: Date.now(), reqId });
         kernel.publish('vm.spawn', { _request_id: reqId, cmd: command, args, cwd: 'home' });
       }
 
@@ -295,7 +314,7 @@ export const TerminalApp: React.FC = () => {
           // Auto-execute the translated command
           const [cmd, ...args] = command.split(' ');
           const reqId = Math.random().toString(36).substring(7);
-          setRunning({ label: command, startedAt: Date.now() });
+          setRunning({ label: command, startedAt: Date.now(), reqId });
           kernel.publish('vm.spawn', {
             _request_id: reqId,
             cmd,
@@ -359,6 +378,7 @@ export const TerminalApp: React.FC = () => {
           {elapsedMs > 30000 && (
             <span className="text-amber-500/70 text-xs">still going…</span>
           )}
+          {running.reqId && <span className="text-gray-600 text-xs">ctrl-c to cancel</span>}
         </div>
       )}
       <div className="flex items-center mt-2 relative">

@@ -22,6 +22,10 @@ class Kernel {
   private listeners: Set<BusListener> = new Set();
   private clientId: string = `client-${Math.random().toString(36).substring(2, 9)}`;
   private messageLog: Envelope[] = [];
+  // In-flight cancellable requests, keyed by _request_id. Ctrl+C in the
+  // terminal publishes vm.cancel, which aborts the underlying fetch — the
+  // request is genuinely dropped, not merely ignored while it finishes.
+  private inflight: Map<string, AbortController> = new Map();
 
   // Always true: there's nothing to connect/reconnect to anymore. Kept so
   // callers that still check `kernel.isLive` (or guard on `kernel.socket`)
@@ -92,8 +96,8 @@ class Kernel {
     if (env.topic === 'agent.chat' && env.to) return void this.handleAgentChat(env);
     if (env.topic === 'ai.chat') return void this.handleDirectChat(env);
     if (env.topic === 'vm.spawn') return void this.handleExec(env);
+    if (env.topic === 'vm.cancel') return this.handleCancel(env);
     if (env.topic === 'vm.render') return void this.handleRender(env);
-    if (env.topic === 'terminal.check_shadow') return this.handleShadowCheck(env);
     if (env.topic === 'sys.terminal.intent') return void this.handleTerminalIntent(env);
     if (env.topic.startsWith('chat.')) return void this.handleChatHistory(env);
     if (env.topic === 'applet.compile') return this.handleAppletCompile(env);
@@ -238,6 +242,7 @@ class Kernel {
         method: 'POST',
         headers,
         body: JSON.stringify({ cmd: payload.cmd, args: payload.args || [] }),
+        signal: this.register(payload._request_id),
       });
       const data = await res.json();
       if (data.stdout) {
@@ -248,9 +253,43 @@ class Kernel {
       }
       this.broadcast({ topic: 'vm.exit', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, code: data.code ?? 0 }, time: now() });
     } catch (err: any) {
+      // A cancel already reported itself; re-reporting it as a failure to
+      // reach the sandbox would be misleading.
+      if (err?.name === 'AbortError') return;
       this.broadcast({ topic: 'vm.stderr', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, text: `Failed to reach exec sandbox: ${err?.message || err}\n` }, time: now() });
       this.broadcast({ topic: 'vm.exit', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, code: 1 }, time: now() });
+    } finally {
+      this.clear(payload._request_id);
     }
+  }
+
+  /** Registers a cancellable request and returns the signal to pass to fetch. */
+  private register(requestId?: string): AbortSignal | undefined {
+    if (!requestId) return undefined;
+    const controller = new AbortController();
+    this.inflight.set(requestId, controller);
+    return controller.signal;
+  }
+
+  private clear(requestId?: string) {
+    if (requestId) this.inflight.delete(requestId);
+  }
+
+  /**
+   * Ctrl+C. Aborts the fetch and reports the interrupt itself, so the
+   * caller's exit handling runs exactly once rather than racing the
+   * request's own error path.
+   */
+  private handleCancel(env: Envelope) {
+    const { _request_id } = env.payload as { _request_id?: string };
+    if (!_request_id) return;
+    const controller = this.inflight.get(_request_id);
+    if (!controller) return;
+    controller.abort();
+    this.inflight.delete(_request_id);
+    this.broadcast({ topic: 'vm.stderr', from: 'kernel', to: this.clientId, payload: { _request_id, text: '^C\n' }, time: now() });
+    // 130 is the conventional shell exit code for SIGINT.
+    this.broadcast({ topic: 'vm.exit', from: 'kernel', to: this.clientId, payload: { _request_id, code: 130 }, time: now() });
   }
 
   /** Terminal's `render <url> [--screenshot]` — a real headless-browser page load, separate endpoint from vm.spawn/api/exec.ts since it needs a much longer budget (see api/browser-render.ts). Screenshot results go out as a distinct 'vm.render:image' topic since vm.stdout is plain text — Terminal.tsx renders that one specially instead of as terminal text. */
@@ -268,6 +307,7 @@ class Kernel {
         method: 'POST',
         headers,
         body: JSON.stringify({ url: payload.url, mode: payload.mode || 'text' }),
+        signal: this.register(payload._request_id),
       });
       const data = await res.json();
 
@@ -281,19 +321,12 @@ class Kernel {
       }
       this.broadcast({ topic: 'vm.exit', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, code: data.code ?? 0 }, time: now() });
     } catch (err: any) {
+      if (err?.name === 'AbortError') return;
       this.broadcast({ topic: 'vm.stderr', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, text: `Failed to reach render service: ${err?.message || err}\n` }, time: now() });
       this.broadcast({ topic: 'vm.exit', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, code: 1 }, time: now() });
+    } finally {
+      this.clear(payload._request_id);
     }
-  }
-
-  private handleShadowCheck(env: Envelope) {
-    // No speculative-execution engine in this build (see plan v1 cuts) —
-    // always report a miss, which is exactly what makes Terminal.tsx fall
-    // through to a normal `vm.spawn`.
-    const payload = env.payload as { command: string };
-    setTimeout(() => {
-      this.broadcast({ topic: 'terminal.shadow:miss', from: 'kernel', payload: { command: payload.command }, time: now() });
-    }, 0);
   }
 
   private async handleTerminalIntent(env: Envelope) {

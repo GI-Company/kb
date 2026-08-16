@@ -69,6 +69,31 @@ describe('TerminalApp', () => {
     expect(mockPublish).toHaveBeenCalledWith('vm.spawn', expect.objectContaining({ cmd: 'whoami' }));
   });
 
+  // Ctrl+C must abort the real request, not just hide the indicator — an
+  // uncancelled fetch keeps consuming budget and can still emit output.
+  it('Ctrl+C publishes vm.cancel for the in-flight request', () => {
+    render(<TerminalApp />);
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'whoami' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    const spawn = mockPublish.mock.calls.find(c => c[0] === 'vm.spawn');
+    expect(spawn).toBeTruthy();
+    const reqId = spawn![1]._request_id;
+
+    fireEvent.keyDown(input, { key: 'c', ctrlKey: true });
+    expect(mockPublish).toHaveBeenCalledWith('vm.cancel', { _request_id: reqId });
+  });
+
+  it('Ctrl+C with nothing running just discards the line', () => {
+    render(<TerminalApp />);
+    const input = screen.getByRole('textbox') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'half typed' } });
+    fireEvent.keyDown(input, { key: 'c', ctrlKey: true });
+    expect(input.value).toBe('');
+    expect(mockPublish).not.toHaveBeenCalledWith('vm.cancel', expect.anything());
+  });
+
   it('recalls the previous command with ArrowUp', () => {
     render(<TerminalApp />);
     const input = screen.getByRole('textbox') as HTMLInputElement;
