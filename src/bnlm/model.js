@@ -132,6 +132,23 @@ export class BNLM {
    * @returns {Promise<Tensor>} logits, shape (B*T, vocabSize)
    */
   async forward(idsFlat, B, T) {
+    const finalNormed = await this.encode(idsFlat, B, T);
+    // Weight-tied output projection: reuse the token embedding as the
+    // unembedding matrix.
+    return matmul(finalNormed, this.tokEmb, false, true);
+  }
+
+  /**
+   * The trunk: everything forward() does except the projection to vocab
+   * logits. Returns the final layer-normed hidden states, shape
+   * (B*T, dModel).
+   *
+   * Split out so heads other than next-token prediction can be attached to
+   * the same body — see classifier.js, which pools these states and runs a
+   * classification head instead. Language modeling is one task this trunk
+   * can do, not the only one it's capable of.
+   */
+  async encode(idsFlat, B, T) {
     if (T > this.contextLen) throw new Error(`sequence length ${T} exceeds contextLen ${this.contextLen}`);
 
     const tok = embeddingLookup(this.tokEmb, idsFlat);
@@ -165,9 +182,7 @@ export class BNLM {
       x = addElem(x, mlpOut);
     }
 
-    const finalNormed = layerNorm(x, this.lnfg, this.lnfb);
-    const logits = await matmul(finalNormed, this.tokEmb, false, true);
-    return logits;
+    return layerNorm(x, this.lnfg, this.lnfb);
   }
 
   async attention(x, layer, B, T, causalMaskAdd) {
