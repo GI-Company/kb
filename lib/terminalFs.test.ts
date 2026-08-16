@@ -105,6 +105,20 @@ describe('VFS-backed terminal commands', () => {
     expect(result.stderr).toContain('Usage: cat <file>');
   });
 
+  // `>>` maps to write -a. Dropping the flag would silently overwrite,
+  // which destroys data rather than merely failing.
+  it('write -a appends instead of overwriting', async () => {
+    await sh('write log.txt one\n');
+    await sh('write -a log.txt two\n');
+    expect((await sh('cat log.txt')).result.stdout).toBe('one\ntwo\n');
+  });
+
+  it('write without -a overwrites', async () => {
+    await sh('write log.txt one');
+    await sh('write log.txt two');
+    expect((await sh('cat log.txt')).result.stdout).toBe('two\n');
+  });
+
   it('mkdir refuses to clobber an existing name', async () => {
     await sh('mkdir a');
     const { result } = await sh('mkdir a');

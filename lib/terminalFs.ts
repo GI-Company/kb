@@ -133,7 +133,7 @@ export const VFS_USAGE: Record<string, string> = {
   rm: 'Usage: rm [-r] <path>',
   mv: 'Usage: mv <source> <destination>',
   cp: 'Usage: cp <source> <destination>',
-  write: 'Usage: write <file> <text>    (append with >> in a later phase)',
+  write: 'Usage: write [-a] <file> <text>   (-a appends; `>` and `>>` use this)',
 };
 
 function usageErr(command: string, message: string): CommandResult {
@@ -227,7 +227,11 @@ export async function runFsCommand(
       const match = existing.find(c => c.name === resolved.name);
       if (match) {
         if (match.type === 'directory') return keep(err('write', `${target}: Is a directory`));
-        await vfs.write(match.id, text, userId);
+        // -a is what `>>` uses. Without it a redirect append would silently
+        // overwrite, which is worse than failing — it destroys data.
+        const append = flags.some(f => f.includes('a'));
+        const next = append ? (await vfs.read(match.id, userId)) + text : text;
+        await vfs.write(match.id, next, userId);
       } else {
         await vfs.create(dirId(resolved.parent), resolved.name, 'file', userId, text);
       }

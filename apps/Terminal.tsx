@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { kernel } from '../services/kernel';
 import { Envelope } from '../types';
 import { VFS_COMMANDS, runFsCommand, cwdPath, ROOT_CWD, Cwd } from '../lib/terminalFs';
+import { hasPipelineSyntax, parseLine, runPipeline } from '../lib/terminalPipeline';
 import { getCurrentUserId } from '../lib/auth';
 
 interface Line {
@@ -93,8 +94,48 @@ export const TerminalApp: React.FC = () => {
       const [command, ...args] = cmd.split(' ');
       const reqId = Math.random().toString(36).substring(7);
 
+      const emit = (text: string, isError: boolean) => {
+        if (!text) return;
+        setLines(prev => [...prev, {
+          id: Math.random().toString(),
+          type: isError ? 'error' : 'output',
+          content: text,
+          time: new Date().toLocaleTimeString()
+        }]);
+      };
+
       if (command === 'clear') {
         setLines([]);
+      } else if (hasPipelineSyntax(cmd)) {
+        // Pipes and redirects are composed here and never sent to the
+        // server — `|` and `>` stay rejected by api/exec.ts's sanitizer.
+        const parsed = parseLine(cmd);
+        if (typeof parsed === 'string') {
+          emit(`${parsed}\n`, true);
+        } else {
+          let workingCwd = cwd;
+          runPipeline(parsed, {
+            runVfs: async (stage, stdin) => {
+              if (!VFS_COMMANDS.has(stage.command)) return null;
+              // `write` is how a redirect target gets its content, so a
+              // piped stage passes stdin through as the text to write.
+              const args = stage.command === 'write' && stdin ? [stage.args[0], stdin] : stage.args;
+              const { result, cwd: next } = await runFsCommand(stage.command, args, { cwd: workingCwd, userId });
+              workingCwd = next;
+              return result;
+            },
+            writeFile: async (path, content, append) => {
+              const args = append ? ['-a', path, content] : [path, content];
+              const { result } = await runFsCommand('write', args, { cwd: workingCwd, userId });
+              return result;
+            },
+            isServerCommand: (c) => !VFS_COMMANDS.has(c),
+          }).then(result => {
+            setCwd(workingCwd);
+            emit(result.stderr, true);
+            emit(result.stdout, false);
+          });
+        }
       } else if (VFS_COMMANDS.has(command)) {
         // Handled entirely in the browser: persistent, instant, and these
         // never reach execFile at all — less server surface, not more.
