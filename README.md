@@ -96,6 +96,7 @@ api/guest-usage.ts                Guest daily-quota accounting (Node function)
 ## Further reading
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — the actual current stack, and the map from the original Go-backed design
+- [SECURITY.md](./SECURITY.md) — threat model, what's defended, and the known holes stated plainly
 - [KERNOS_101.md](./KERNOS_101.md) — a from-scratch walkthrough of using the app
 - [KERNOS_OS_WHITEPAPER.md](./KERNOS_OS_WHITEPAPER.md), [KERNOS_OS_RESEARCH_PAPER.md](./KERNOS_OS_RESEARCH_PAPER.md), [KERNOS_OS_VALUATION.md](./KERNOS_OS_VALUATION.md) — narrative/portfolio documents, updated to match what's actually built
 
