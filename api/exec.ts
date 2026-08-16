@@ -37,15 +37,30 @@ import { checkRateLimit, getClientIp, rateLimitResponseHeaders } from '../lib/ra
 import { verifyAccessToken, extractBearerToken } from '../lib/verifyAuth.js';
 import { runCurl, runDig, runPing, NETWORK_USAGE } from '../lib/networkCommands.js';
 
-// Conservative — commands near-certain to exist in a Linux-based Node
-// serverless runtime. No git/python/go/rust/ffmpeg/sqlite3; those aren't
-// part of a stock Node function image.
-const ALLOWED_COMMANDS = new Set([
+// Every entry here was probed against the deployed function and answered.
+// The list used to carry 39 names, 12 of which could never run:
+//
+//   find diff hostname which ps file tar gzip jq
+//     — simply not in the Lambda base image. `help` advertised them and
+//       they returned 127, which reads to a user as their mistake.
+//
+//   node npm npx
+//     — removed rather than fixed. They were failing only because the
+//       stripped PATH below omits Vercel's Node directory, so a one-line
+//       change would have made them work. That is the argument against
+//       them: `node` is arbitrary server-side code execution, and it buys
+//       nothing here, because the jail is destroyed after every command —
+//       there is no script to run and nothing to install into on a 9s
+//       budget. Running code belongs in the browser (Python on a worker,
+//       kernos.exec), where it cannot reach the server at all.
+//
+// Do NOT add a command back without checking it actually exists in the
+// runtime. An allowlist that lies is worse than a short one.
+export const ALLOWED_COMMANDS = new Set([
   'ls', 'cat', 'head', 'tail', 'echo', 'grep', 'sed', 'awk', 'cut', 'tr',
-  'find', 'wc', 'sort', 'uniq', 'diff', 'date', 'whoami', 'uname', 'pwd',
-  'hostname', 'id', 'env', 'printenv', 'which', 'df', 'du', 'ps',
-  'mkdir', 'touch', 'cp', 'mv', 'stat', 'file', 'node', 'npm', 'npx',
-  'tar', 'gzip', 'jq',
+  'wc', 'sort', 'uniq', 'date', 'whoami', 'uname', 'pwd',
+  'id', 'env', 'printenv', 'df', 'du',
+  'mkdir', 'touch', 'cp', 'mv', 'stat',
 ]);
 
 // Real network access — see the file-header comment above. Handled before

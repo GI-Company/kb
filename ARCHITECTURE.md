@@ -101,7 +101,7 @@ This is the one piece of the "cognitive microkernel" vision that's fully real: a
 
 ## Deployment model: stateless functions, not a persistent kernel
 
-This is the load-bearing difference from the original design. The Go backend was one long-running process holding an in-memory client registry, a growing SQLite DB, and background goroutines. Vercel functions are the opposite: stateless, ephemeral, ~10s execution budget on Hobby, no shared memory between invocations, and a minimal Linux image (`api/exec.ts`'s allowlist had to shrink to commands that image actually ships — no git/python/go/rust/ffmpeg unless verified present).
+This is the load-bearing difference from the original design. The Go backend was one long-running process holding an in-memory client registry, a growing SQLite DB, and background goroutines. Vercel functions are the opposite: stateless, ephemeral, ~10s execution budget on Hobby, no shared memory between invocations, and a minimal Linux image (`api/exec.ts`'s allowlist had to shrink to commands that image actually ships — 27, each probed against the deployed function; no git/python/go/rust/ffmpeg, and no node/npm either, which were removed as pointless RCE surface in a jail that doesn't outlive the request).
 
 `vercel.json` sets `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` — required for `SharedArrayBuffer`, which BNLM's data-parallel Worker training uses. That's also why Tailwind and fonts are bundled locally rather than loaded from a CDN: cross-origin scripts/stylesheets get blocked under `require-corp` unless the origin sends a matching `Cross-Origin-Resource-Policy` header.
 
