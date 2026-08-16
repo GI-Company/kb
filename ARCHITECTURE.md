@@ -82,7 +82,11 @@ Dispatcher and Kernos Assistant additionally carry a **tool-call contract**: the
 - `bnlm.train` / `bnlm.generate` / `bnlm.score` — run against `lib/localModel.ts` directly. This is the literal "Groq spins up and trains a browser-native model" loop.
 - `kernos.exec` — runs agent-written TypeScript through `lib/kernosExec.ts`, the same Sucrase compile plus `AsyncFunction` sandbox that human-authored applets use, with a curated capability set (`vfs`, `bnlm`, `agent.ask`, a restricted `kernel` proxy), an 8s wall-clock timeout, and per-execution call budgets. `lib/kernosTools.ts` dispatches both families, and `lib/taskEngine.ts` can use either as a DAG node's command.
 
-The sandbox's honest limit: the timeout is a `Promise.race`, which catches slow *async* work but cannot preempt genuinely synchronous code (a real `while (true) {}`), because nothing here runs off-thread. A true hard-kill needs a Web Worker. The call budgets are the actual backstop against a runaway loop around real, billable calls.
+The sandbox runs on a **Web Worker**, so the timeout is a real kill rather than a race: it ends with `terminate()`, which stops synchronous code. A `while (true) {}` used to pin the main thread and hang the whole tab regardless of any timeout; measured now, the main thread keeps ticking throughout and the worker dies on schedule.
+
+Capabilities live on the host, not in the worker — the worker holds no reference to the VFS, the models, the bus, or the network, and can only request an action over `postMessage`, which the host checks against the same per-execution budgets. Killing the thread therefore can't strand a half-applied capability. The budgets remain the backstop against a loop around real, billable calls, since a timeout alone doesn't bound cost.
+
+Two capabilities were dropped in the move, both deliberately: `React`/`Lucide` (unclonable across the worker boundary, and this tool renders nothing) and `kernel.subscribe` (a callback can't survive `terminate()` and would leak a listener bound to a dead thread).
 
 ## The local model: BNLM
 

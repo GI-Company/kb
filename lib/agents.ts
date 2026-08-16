@@ -130,14 +130,17 @@ return value becomes the result. Available inside the sandbox:
 - \`vfs\` — read(id) / write(id, content) / list(parentId) / create(parentId, name, type, content?), scoped to the current user
 - \`bnlm\` — train(corpus, steps?) / generate(prompt, maxTokens?) / score(text), the same in-browser local model bnlm.* tools use
 - \`agent\` — ask(personaId, prompt) for a one-off question to another persona (e.g. agent.ask("agent-coder", "..."))
-- \`kernel\` — publish(topic, payload) / subscribe(callback), restricted from destructive OS topics
-- \`React\` / \`Lucide\` — only relevant if you want to return JSX
+- \`bnlm.classify(text)\` — route text through the trained local classifier
+- \`kernel\` — publish(topic, payload), restricted from destructive OS topics
 
-No raw imports (react/lucide-react are already in scope, not real modules),
-no eval, no network access, no DOM access. Runs with an 8-second timeout and
-a small budget on how many agent.ask/bnlm calls one execution can make — if
-you need a loop, keep it tight, not open-ended. This does NOT open a
-window — it's for computing and returning a result, not UI.
+No raw imports, no eval, no network access, no DOM access, and no React —
+this runs on a Web Worker and returns data, not UI. Return plain values:
+functions and class instances cannot cross the sandbox boundary.
+
+Runs with an 8-second timeout enforced by terminating the worker, so a
+runaway loop is genuinely stopped rather than merely reported. There is also
+a small budget on how many agent.ask/bnlm/vfs calls one execution may make —
+keep loops tight.
 
 Only emit a kernos.exec block when the task genuinely needs it — a single
 bnlm.* tool call or a normal reply is simpler and preferred when either

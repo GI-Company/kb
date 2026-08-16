@@ -48,7 +48,12 @@ const EXPORT_DEFAULT_RE = /export\s+default\s+/;
  * `return` statement instead of an exported value. Rejecting that outright
  * fought the model instead of accepting what it actually produced.
  */
-function compileSource(source: string, bindingName: string, requireDefaultExport: boolean): string {
+function compileSource(
+  source: string,
+  bindingName: string,
+  requireDefaultExport: boolean,
+  withReactPreamble: boolean
+): string {
   if (!source || !source.trim()) {
     throw new Error('Nothing to compile — the source is empty.');
   }
@@ -77,6 +82,14 @@ function compileSource(source: string, bindingName: string, requireDefaultExport
 
   // Common hooks available bare (not just React.useState) — matches how
   // the starter applet template in apps/Editor.tsx is written.
+  //
+  // Applet-only. kernos.exec runs on a Web Worker where React deliberately
+  // isn't in scope (it can't cross a structured-clone boundary, and that
+  // tool renders nothing), so emitting this preamble there would make every
+  // execution fail with "React is not defined" before reaching the user's
+  // first line.
+  if (!withReactPreamble) return transformed;
+
   const preamble =
     'const { useState, useEffect, useRef, useCallback, useMemo, useContext, useReducer, useLayoutEffect } = React;\n';
 
@@ -84,7 +97,7 @@ function compileSource(source: string, bindingName: string, requireDefaultExport
 }
 
 export function compileApplet(source: string): CompileResult {
-  return { code: compileSource(source, 'KernosDynamicApplet', true) };
+  return { code: compileSource(source, 'KernosDynamicApplet', true, true) };
 }
 
 /**
@@ -97,5 +110,5 @@ export function compileApplet(source: string): CompileResult {
  * in the no-default-export case.
  */
 export function compileExecBody(source: string): string {
-  return compileSource(source, '__kernosExecExport', false);
+  return compileSource(source, '__kernosExecExport', false, false);
 }

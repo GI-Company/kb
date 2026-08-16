@@ -1,42 +1,39 @@
-// kernos.exec — the agent-callable execution tool. Runs agent-generated
-// TypeScript through the exact same kind of sandbox
-// components/apps/DynamicApplet.tsx already runs human-authored applet
-// code in (an AsyncFunction body, no real eval, no DOM, no raw imports —
-// see lib/appletCompiler.ts), just with a different contract: the code
-// `export default`s a value OR a function; if it's a function, it's
-// called (and awaited) and its return value becomes the tool result.
-// Nothing here opens a window — this is for computing and returning a
-// result, not UI. (Editor/CDE's "Launch Applet" is the UI path.)
+// kernos.exec — the agent-callable execution tool.
 //
-// Capabilities injected into the sandbox are curated, not the raw
-// modules: `vfs`/`bnlm` are scoped to the calling user, `agent.ask` goes
-// through the same /api/chat path as everything else (so it's subject to
-// the same server-side rate limiting), and `kernel` is the same
-// restricted publish/subscribe proxy DynamicApplet.tsx already uses
-// (blocks vm.spawn/task.run/sys.consolidate).
+// Agent-written TypeScript is compiled by lib/appletCompiler.ts (the same
+// Sucrase pass Editor/CDE's "Launch Applet" uses) and then run on a Web
+// Worker, not on the main thread.
 //
-// Safety model, and its real limit: the wall-clock timeout below
-// (Promise.race) catches slow/hung *async* work — a stuck fetch, an
-// agent.ask that never resolves — but it cannot preempt genuinely
-// synchronous code (a real `while (true) {}`), because JS is single-
-// threaded and nothing here runs off-thread. True hard-kill of runaway
-// code needs a Web Worker (killable via terminate() from outside its own
-// thread) — not built for v1, since agent-generated code comes from the
-// same trusted model already calling bnlm.train/exec/etc., not arbitrary
-// untrusted input. The per-call budget guard below is the actual backstop
-// for a runaway *loop* around real calls (agent.ask in particular costs
-// real Groq API budget even after the tool call times out and returns an
-// error to the caller) — capping how many such calls one execution can
-// make bounds worst-case cost even though the timeout alone can't.
+// WHY THE WORKER MATTERS: the previous version raced execution against a
+// timeout Promise. That is enough for slow *async* work, but it cannot
+// preempt synchronous code — `while (true) {}` pins the main thread and the
+// timeout never gets a chance to fire, so the whole tab hangs. A worker runs
+// on its own thread, so a timeout here ends with terminate(), which actually
+// kills a spinning loop. That is the difference between a documented
+// limitation and a real one being closed.
+//
+// The capability model is unchanged in what it grants and stronger in how it
+// grants it. The worker holds no reference to the VFS, the local models, the
+// kernel bus, or the network. It can only ask this file to act on its
+// behalf, and every request is checked here against the same per-execution
+// budgets as before. Terminating the thread therefore cannot strand a
+// half-applied capability; the worst an aborted run leaves behind is an
+// unanswered message.
+//
+// Deliberate capability changes from the main-thread version:
+//   - React / Lucide are gone. They cannot cross a structured-clone
+//     boundary, and the contract already said this tool does not open a
+//     window — returning JSX from it was never useful.
+//   - kernel.subscribe is gone. A callback cannot survive terminate(), so
+//     it would leak a listener bound to a dead thread.
+//   - bnlm.classify is new, reflecting the classifier being a real tool now.
 
 import { compileExecBody } from './appletCompiler';
 import { kernel } from '../services/kernel';
 import { vfs } from './vfs';
 import { localModel } from './localModel';
+import { localClassifier } from './localClassifier';
 import { fetchGroqText } from './groqFetch';
-import * as LucideIcons from 'lucide-react';
-import React from 'react';
-import { Envelope } from '../types';
 
 export interface KernosExecResult {
   ok: boolean;
@@ -47,14 +44,19 @@ export interface KernosExecResult {
 const DEFAULT_TIMEOUT_MS = 8000;
 const MAX_TIMEOUT_MS = 20000;
 
-// Worst-case call budget per single kernos.exec invocation — deliberately
-// small; this is a tool call inside a chat turn or DAG step, not a batch
-// job. Exceeding any of these throws, same as any other runtime error.
+// Worst-case call budget per single invocation — deliberately small; this is
+// a tool call inside a chat turn or DAG step, not a batch job. A timeout
+// alone doesn't bound cost, because in-flight calls keep spending after the
+// caller has been handed an error.
 const CALL_BUDGET = { agentAsk: 5, bnlm: 5, vfs: 50, kernelPublish: 20 };
 
-type AsyncFn = (...args: unknown[]) => Promise<unknown>;
+const BLOCKED_TOPICS = ['vm.spawn', 'task.run', 'sys.consolidate'];
 
-export async function runKernosExec(code: string, userId: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<KernosExecResult> {
+export async function runKernosExec(
+  code: string,
+  userId: string,
+  timeoutMs = DEFAULT_TIMEOUT_MS
+): Promise<KernosExecResult> {
   let compiled: string;
   try {
     compiled = compileExecBody(code);
@@ -64,78 +66,127 @@ export async function runKernosExec(code: string, userId: string, timeoutMs = DE
 
   const clampedTimeout = Math.min(Math.max(timeoutMs, 1000), MAX_TIMEOUT_MS);
   const remaining = { ...CALL_BUDGET };
-  const guard = (kind: keyof typeof CALL_BUDGET) => {
+  const spend = (kind: keyof typeof CALL_BUDGET) => {
     if (remaining[kind]-- <= 0) {
-      throw new Error(`kernos.exec: exceeded the ${kind} call budget (${CALL_BUDGET[kind]} per execution) — this usually means a loop around a real call, not a one-off.`);
+      throw new Error(
+        `kernos.exec: exceeded the ${kind} call budget (${CALL_BUDGET[kind]} per execution) — ` +
+        `this usually means a loop around a real call, not a one-off.`
+      );
     }
   };
 
-  // Same restricted proxy DynamicApplet.tsx's AppletAPI already uses —
-  // publish/subscribe only, hard-blocked from destructive OS topics.
-  const kernelProxy = {
-    publish: (topic: string, payload: unknown) => {
-      guard('kernelPublish');
-      const blocked = ['vm.spawn', 'task.run', 'sys.consolidate'];
-      if (blocked.some(t => topic.startsWith(t))) {
-        console.error(`[KernosExecSecurity] blocked restricted topic: ${topic}`);
+  // The capability table. This is the entire attack surface the sandbox has,
+  // and it lives here rather than in the worker precisely so the worker can
+  // be killed without consequence.
+  const handlers: Record<string, Record<string, (...args: any[]) => unknown>> = {
+    vfs: {
+      read: (id: string) => { spend('vfs'); return vfs.read(id, userId); },
+      write: (id: string, content: string) => { spend('vfs'); return vfs.write(id, content, userId); },
+      list: (parentId: string) => { spend('vfs'); return vfs.list(parentId, userId); },
+      create: (parentId: string, name: string, type: 'file' | 'directory', content?: string) => {
+        spend('vfs');
+        return vfs.create(parentId, name, type, userId, content);
+      },
+    },
+    bnlm: {
+      train: (corpus: string, steps?: number) => { spend('bnlm'); return localModel.ensureInitAndTrain(corpus, steps ?? 200); },
+      generate: (prompt: string, maxTokens?: number) => { spend('bnlm'); return localModel.generate(prompt, maxTokens ?? 60); },
+      score: (text: string) => { spend('bnlm'); return localModel.score(text); },
+      classify: (text: string) => { spend('bnlm'); return localClassifier.predict(text); },
+    },
+    agent: {
+      ask: (personaId: string, prompt: string) => { spend('agentAsk'); return fetchGroqText(personaId, prompt); },
+    },
+    kernel: {
+      publish: (topic: string, payload: unknown) => {
+        spend('kernelPublish');
+        if (BLOCKED_TOPICS.some(t => String(topic).startsWith(t))) {
+          throw new Error(`kernos.exec is not allowed to publish "${topic}".`);
+        }
+        kernel.publish(topic, payload);
+        return true;
+      },
+    },
+    console: {
+      log: (...a: unknown[]) => { console.log('[kernos.exec]', ...a); return true; },
+      warn: (...a: unknown[]) => { console.warn('[kernos.exec]', ...a); return true; },
+      error: (...a: unknown[]) => { console.error('[kernos.exec]', ...a); return true; },
+    },
+  };
+
+  let worker: Worker;
+  try {
+    worker = new Worker(new URL('./kernosExec.worker.ts', import.meta.url), { type: 'module' });
+  } catch (err: any) {
+    return { ok: false, error: `Could not start the sandbox worker: ${err?.message || err}` };
+  }
+
+  return new Promise<KernosExecResult>(resolve => {
+    let settled = false;
+    const finish = (result: KernosExecResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      worker.terminate();
+      resolve(result);
+    };
+
+    // The actual kill. Unlike a Promise.race this ends the thread, so a
+    // synchronous infinite loop stops rather than merely being ignored.
+    const timer = setTimeout(() => {
+      finish({
+        ok: false,
+        error:
+          `kernos.exec timed out after ${clampedTimeout}ms and the sandbox was terminated. ` +
+          `If this was an infinite loop, it has been stopped.`,
+      });
+    }, clampedTimeout);
+
+    worker.onerror = event => {
+      finish({ ok: false, error: event.message || 'The sandbox worker failed to start or crashed.' });
+    };
+
+    worker.onmessage = async (event: MessageEvent) => {
+      const msg = event.data;
+
+      if (msg?.type === 'done') {
+        finish(msg.ok ? { ok: true, value: msg.value } : { ok: false, error: msg.error });
         return;
       }
-      kernel.publish(topic, payload);
-    },
-    subscribe: (cb: (env: Envelope) => void) => kernel.subscribe(cb),
-  };
 
-  const vfsApi = {
-    read: (id: string) => { guard('vfs'); return vfs.read(id, userId); },
-    write: (id: string, content: string) => { guard('vfs'); return vfs.write(id, content, userId); },
-    list: (parentId: string) => { guard('vfs'); return vfs.list(parentId, userId); },
-    create: (parentId: string, name: string, type: 'file' | 'directory', content?: string) => {
-      guard('vfs');
-      return vfs.create(parentId, name, type, userId, content);
-    },
-  };
+      if (msg?.type !== 'rpc') return;
 
-  const bnlmApi = {
-    train: (corpus: string, steps?: number) => { guard('bnlm'); return localModel.ensureInitAndTrain(corpus, steps ?? 200); },
-    generate: (prompt: string, maxTokens?: number) => { guard('bnlm'); return localModel.generate(prompt, maxTokens ?? 60); },
-    score: (text: string) => { guard('bnlm'); return localModel.score(text); },
-  };
+      // An unknown namespace/method is a bug or a probe; either way it is
+      // reported to the sandbox as a failed call rather than ignored, so the
+      // agent gets a usable error instead of hanging.
+      const fn = handlers[msg.ns]?.[msg.method];
+      if (!fn) {
+        worker.postMessage({ type: 'rpc:result', id: msg.id, ok: false, error: `No such capability: ${msg.ns}.${msg.method}` });
+        return;
+      }
 
-  const agentApi = {
-    ask: (personaId: string, prompt: string) => { guard('agentAsk'); return fetchGroqText(personaId, prompt); },
-  };
-
-  try {
-    // AsyncFunction isn't a global — construct it the same way any
-    // async-function-from-a-string trick does, via the constructor of a
-    // throwaway async function's prototype chain.
-    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (...args: string[]) => AsyncFn;
-    const sandboxFn = new AsyncFunction(
-      'React', 'Lucide', 'kernel', 'vfs', 'bnlm', 'agent', 'console',
-      `
-        ${compiled}
-        if (typeof __kernosExecExport === 'function') {
-          return await __kernosExecExport();
+      try {
+        const value = await fn(...(msg.args || []));
+        // Results cross by structured clone; anything unclonable would throw
+        // inside postMessage and hang the sandbox waiting for a reply that
+        // never comes. Reported as an error instead.
+        try {
+          worker.postMessage({ type: 'rpc:result', id: msg.id, ok: true, value });
+        } catch {
+          worker.postMessage({
+            type: 'rpc:result',
+            id: msg.id,
+            ok: false,
+            error: `${msg.ns}.${msg.method} returned a value that cannot cross the sandbox boundary.`,
+          });
         }
-        if (typeof __kernosExecExport !== 'undefined') {
-          return __kernosExecExport;
-        }
-        // No \`export default\` at all — compileExecBody allows that (unlike
-        // applets, which need a real component reference). The code's own
-        // top-level \`return\`, if it has one, already exited above this
-        // point; if it doesn't, this implicitly returns undefined, not a
-        // ReferenceError — __kernosExecExport is never referenced directly
-        // here, only through the ReferenceError-safe \`typeof\` checks above.
-      `
-    );
+      } catch (err: any) {
+        // Budget overruns land here too, which is what stops a runaway loop
+        // from spending real API credit even before the timeout fires.
+        worker.postMessage({ type: 'rpc:result', id: msg.id, ok: false, error: err?.message || String(err) });
+      }
+    };
 
-    const execPromise = sandboxFn(React, LucideIcons, kernelProxy, vfsApi, bnlmApi, agentApi, console);
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`kernos.exec timed out after ${clampedTimeout}ms`)), clampedTimeout)
-    );
-    const value = await Promise.race([execPromise, timeoutPromise]);
-    return { ok: true, value };
-  } catch (err: any) {
-    return { ok: false, error: err?.message || String(err) };
-  }
+    worker.postMessage({ type: 'run', code: compiled });
+  });
 }
