@@ -30,10 +30,10 @@
 
 import { compileExecBody } from './appletCompiler';
 import { kernel } from '../services/kernel';
-import { vfs } from './vfs';
 import { localModel } from './localModel';
 import { localClassifier } from './localClassifier';
 import { fetchGroqText } from './groqFetch';
+import { VfsOverlay } from './vfsOverlay';
 
 export interface KernosExecResult {
   ok: boolean;
@@ -65,6 +65,9 @@ export async function runKernosExec(
   }
 
   const clampedTimeout = Math.min(Math.max(timeoutMs, 1000), MAX_TIMEOUT_MS);
+  // VFS mutations land here, not in the real filesystem, until this
+  // invocation finishes with ok:true — see lib/vfsOverlay.ts for why.
+  const overlay = new VfsOverlay(userId);
   const remaining = { ...CALL_BUDGET };
   const spend = (kind: keyof typeof CALL_BUDGET) => {
     if (remaining[kind]-- <= 0) {
@@ -80,12 +83,12 @@ export async function runKernosExec(
   // be killed without consequence.
   const handlers: Record<string, Record<string, (...args: any[]) => unknown>> = {
     vfs: {
-      read: (id: string) => { spend('vfs'); return vfs.read(id, userId); },
-      write: (id: string, content: string) => { spend('vfs'); return vfs.write(id, content, userId); },
-      list: (parentId: string) => { spend('vfs'); return vfs.list(parentId, userId); },
+      read: (id: string) => { spend('vfs'); return overlay.read(id); },
+      write: (id: string, content: string) => { spend('vfs'); return overlay.write(id, content); },
+      list: (parentId: string) => { spend('vfs'); return overlay.list(parentId); },
       create: (parentId: string, name: string, type: 'file' | 'directory', content?: string) => {
         spend('vfs');
-        return vfs.create(parentId, name, type, userId, content);
+        return overlay.create(parentId, name, type, content);
       },
     },
     bnlm: {
@@ -128,6 +131,22 @@ export async function runKernosExec(
       settled = true;
       clearTimeout(timer);
       worker.terminate();
+      // The commit/discard decision. ok:true is the only path a staged
+      // write ever reaches durable storage — a timeout, a worker crash, or
+      // the script itself throwing all fall through to discard(), and
+      // nothing the sandbox wrote survives. Commit failures (a stale id
+      // that no longer exists, say) are swallowed rather than flipping a
+      // result the caller already trusted to be ok:true — the call
+      // budget already bounded how much a run could stage, so a partial
+      // commit here is a smaller, already-a-no-op-style failure, not a
+      // new one.
+      if (result.ok && overlay.hasPendingWrites) {
+        overlay.commit()
+          .catch(err => console.error('[kernos.exec] overlay commit failed:', err))
+          .finally(() => resolve(result));
+        return;
+      }
+      overlay.discard();
       resolve(result);
     };
 

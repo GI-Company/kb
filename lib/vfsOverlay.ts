@@ -1,0 +1,132 @@
+// A minimal copy-on-write staging layer over lib/vfs.ts.
+//
+// WHY THIS EXISTS: kernos.exec lets agent-written code call vfs.write and
+// vfs.create, and until now those calls hit the user's real, durable files
+// immediately — no relationship to whether the tool call as a whole
+// succeeds. A `while (true) {}` that happens to call vfs.write once before
+// the timeout kills it already left that write behind, durably, with no
+// confirmation. This closes that for the one consumer that has it today.
+//
+// Not a general filesystem layer. Writes/creates land in an in-memory map,
+// never in vfs.ts, until commit() is called — which only happens when the
+// sandboxed run finishes with ok:true. Anything else (error, timeout,
+// terminate()) calls discard() instead, and nothing durable ever changes.
+// Reads and lists are answered by overlaying that map onto the real VFS, so
+// code running inside one invocation sees its own writes immediately
+// (read-your-writes) without those writes being durable yet.
+//
+// Scoped to kernos.exec for now. Python write-back (lib/pythonRuntime.ts)
+// is expected to reuse this same class once it needs the identical
+// property — generalize on the second real consumer, not before.
+
+import { vfs } from './vfs';
+import { FileNode } from '../types';
+
+type StagedWrite = { kind: 'write'; id: string; content: string };
+type StagedCreate = {
+  kind: 'create';
+  tempId: string;
+  /** May itself be a tempId, for a create nested under another staged create. */
+  parentId: string;
+  name: string;
+  type: 'file' | 'directory';
+  content: string;
+};
+type StagedOp = StagedWrite | StagedCreate;
+
+let counter = 0;
+const nextTempId = () => `staged:${Date.now()}:${counter++}`;
+
+export class VfsOverlay {
+  private ops: StagedOp[] = [];
+  // Keyed by tempId for staged creates, or by the real id for a write
+  // targeting a pre-existing node — either way, "what read()/list() should
+  // see for this id right now, before commit."
+  private staged = new Map<string, FileNode>();
+
+  constructor(private userId: string) {}
+
+  get hasPendingWrites(): boolean {
+    return this.ops.length > 0;
+  }
+
+  async read(id: string): Promise<string> {
+    const node = this.staged.get(id);
+    if (node) return node.content ?? '';
+    return vfs.read(id, this.userId);
+  }
+
+  async list(parentId: string): Promise<FileNode[]> {
+    const real = await vfs.list(parentId, this.userId);
+    // Only staged CREATES add a new listing entry. A staged write to a
+    // pre-existing id doesn't change what's listed, only what read()
+    // returns for it — real.list() already includes that node. (The
+    // Supabase backend's list() never returns file content at all, only
+    // metadata, so a listed-then-read-in-the-same-turn file already
+    // depended on a follow-up read() before staging existed; this doesn't
+    // make that any less fresh than it already was.)
+    const stagedChildren = [...this.staged.values()].filter(n => n.parentId === parentId);
+    return [...real, ...stagedChildren];
+  }
+
+  async write(id: string, content: string): Promise<boolean> {
+    const existing = this.staged.get(id);
+    this.staged.set(id, existing ? { ...existing, content } : { id, name: '', type: 'file', content });
+    this.ops.push({ kind: 'write', id, content });
+    // Optimistic: a write against a genuinely bad real id would have
+    // returned false immediately before staging existed, and now only
+    // fails silently at commit() instead. Accepted for v1 — verifying
+    // existence here is a full extra round trip, and the failure mode is
+    // "the write doesn't happen," identical to today's behavior, just
+    // discovered later rather than by the caller's own script.
+    return true;
+  }
+
+  async create(parentId: string, name: string, type: 'file' | 'directory', content = ''): Promise<FileNode> {
+    const tempId = nextTempId();
+    const node: FileNode = { id: tempId, name, type, content, parentId };
+    this.staged.set(tempId, node);
+    this.ops.push({ kind: 'create', tempId, parentId, name, type, content });
+    return node;
+  }
+
+  /**
+   * KNOWN LIMITATION, verified live rather than assumed away: a script's
+   * own return value is captured by the worker BEFORE commit() runs (commit
+   * happens in the host's finish() callback, after the worker has already
+   * resolved). So `return node.id` from a create() hands the *caller* a
+   * tempId, not the real durable id — correct within that one invocation
+   * (every staged read/list/write against that tempId resolves correctly),
+   * but a later, separate kernos.exec call cannot reuse that id string; it
+   * has to look the file up again (by name, via list()) once it exists for
+   * real. This doesn't create a safety gap — a stale tempId used elsewhere
+   * just fails a lookup — but it is a real seam an agent's own code can hit.
+   */
+
+  /**
+   * Replays every staged op through the real VFS, in call order — a create
+   * always lands before anything staged as its child, and a write staged
+   * after a create for the same tempId lands after it, so the final
+   * content is whatever was written last, matching what the agent's script
+   * actually did.
+   */
+  async commit(): Promise<void> {
+    const idMap = new Map<string, string>(); // tempId -> real id, once created
+    for (const op of this.ops) {
+      if (op.kind === 'create') {
+        const realParentId = idMap.get(op.parentId) ?? op.parentId;
+        const node = await vfs.create(realParentId, op.name, op.type, this.userId, op.content);
+        idMap.set(op.tempId, node.id);
+      } else {
+        const realId = idMap.get(op.id) ?? op.id;
+        await vfs.write(realId, op.content, this.userId);
+      }
+    }
+  }
+
+  /** Nothing to undo — nothing staged here ever touched durable storage. */
+  discard(): void {
+    this.ops = [];
+    this.staged.clear();
+  }
+}

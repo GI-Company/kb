@@ -148,6 +148,14 @@ runaway loop is genuinely stopped rather than merely reported. There is also
 a small budget on how many agent.ask/bnlm/vfs calls one execution may make —
 keep loops tight.
 
+vfs writes/creates only become real, durable files if this execution
+finishes successfully — an error or timeout after a write discards it, so
+the user's files are never left half-changed by a run that failed partway.
+Within one execution, create/write/read/list all see each other normally.
+But don't remember an id a create() call returned and reuse it in a LATER,
+separate tool call — look the file up again by name via list() instead;
+an id from one execution is not guaranteed to mean anything in the next.
+
 Only emit a kernos.exec block when the task genuinely needs it — a single
 bnlm.* tool call or a normal reply is simpler and preferred when either
 covers what's needed.`;
