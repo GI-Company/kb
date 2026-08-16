@@ -8,6 +8,7 @@ import { getCurrentUserId } from '../lib/auth';
 // 13MB Pyodide runtime is behind a dynamic import inside pythonRuntime and
 // is not fetched until someone actually types `python`.
 import { pythonRuntime, PYTHON_USAGE, GUEST_MESSAGE } from '../lib/pythonRuntime';
+import { INTEL_COMMANDS, runIntelCommand } from '../lib/terminalIntel';
 
 /**
  * Commands that write or delete. A natural-language translation of one of
@@ -92,7 +93,7 @@ export const TerminalApp: React.FC = () => {
     let matches: string[] = [];
     let dirPrefix = '';
     if (isCommandPosition) {
-      const known = [...VFS_COMMANDS, ...PIPE_AWARE_COMMANDS, ...PYTHON_COMMANDS, 'clear', 'help', 'render', 'curl', 'dig', 'ping'];
+      const known = [...VFS_COMMANDS, ...PIPE_AWARE_COMMANDS, ...PYTHON_COMMANDS, ...INTEL_COMMANDS, 'clear', 'help', 'render', 'curl', 'dig', 'ping'];
       matches = [...new Set(known)].filter(c => c.startsWith(partial)).sort();
     } else {
       const found = await completePath(cwd, partial, userId);
@@ -319,6 +320,9 @@ export const TerminalApp: React.FC = () => {
               if (PYTHON_COMMANDS.has(stage.command)) {
                 return execPython(stage.command, stage.args, stdin);
               }
+              if (INTEL_COMMANDS.has(stage.command)) {
+                return runIntelCommand(stage.command, stage.args, { cwd: workingCwd, userId, stdin });
+              }
               if (!VFS_COMMANDS.has(stage.command)) return null;
               // `write` is how a redirect target gets its content, so a
               // piped stage passes stdin through as the text to write.
@@ -332,7 +336,7 @@ export const TerminalApp: React.FC = () => {
               const { result } = await runFsCommand('write', args, { cwd: workingCwd, userId });
               return result;
             },
-            isServerCommand: (c) => !VFS_COMMANDS.has(c) && !PYTHON_COMMANDS.has(c),
+            isServerCommand: (c) => !VFS_COMMANDS.has(c) && !PYTHON_COMMANDS.has(c) && !INTEL_COMMANDS.has(c),
           }).then(result => {
             setCwd(workingCwd);
             emit(result.stderr, true);
@@ -380,6 +384,13 @@ export const TerminalApp: React.FC = () => {
             emit(out.stdout, false);
           });
         }
+      } else if (INTEL_COMMANDS.has(command)) {
+        // classify/explain/trace — local model and bus, no network. See
+        // BUILTINS.md for the contract these implement.
+        runIntelCommand(command, args, { cwd, userId }).then(result => {
+          emit(result.stderr, true);
+          emit(result.stdout, false);
+        });
       } else if (PYTHON_COMMANDS.has(command)) {
         void runPython(command, args, cmd);
       } else if (command === 'render') {

@@ -116,6 +116,11 @@ export default async function handler(req: any, res: any) {
         `  These are deliberate subsets — an unsupported flag is refused, not ignored.\n` +
         `  sed does s/pattern/replacement/[g] only. grep matches substrings, not regexes.\n` +
         `  awk is NOT in this set: it only runs server-side, where your files do not exist.\n\n` +
+        `Local intelligence (your trained model and the message bus, no network):\n` +
+        `  classify <text>        label it, with the runner-up and the margin\n` +
+        `  explain                why the classifier said that, word by word\n` +
+        `  trace [--last <n>]     what the machine just did\n` +
+        `  All three take --json for NDJSON records, and compose in pipes.\n\n` +
         `Composition (piped and redirected in your browser, never sent to the server):\n` +
         `  cmd | cmd   cmd > file   cmd >> file      (no &&, ||, ; or globbing)\n\n` +
         `Sandboxed commands (fresh temp dir per run, nothing persists):\n` +
