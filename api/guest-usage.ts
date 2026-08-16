@@ -58,7 +58,7 @@ export default async function handler(req: any, res: any) {
   }
 
   const ip = getClientIp(req);
-  const rl = checkRateLimit(`guest-usage:${ip}`, RATE_LIMIT_PER_MIN);
+  const rl = await checkRateLimit(`guest-usage:${ip}`, RATE_LIMIT_PER_MIN);
   for (const [k, v] of Object.entries(rateLimitResponseHeaders(rl))) res.setHeader?.(k, v);
   if (!rl.allowed) {
     res.status(429).json({ error: 'Rate limit exceeded' });

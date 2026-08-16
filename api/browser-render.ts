@@ -46,7 +46,7 @@ export default async function handler(req: any, res: any) {
     return;
   }
 
-  const rl = checkRateLimit(`render:${user.id}`, RATE_LIMIT_PER_MIN);
+  const rl = await checkRateLimit(`render:${user.id}`, RATE_LIMIT_PER_MIN);
   for (const [k, v] of Object.entries(rateLimitResponseHeaders(rl))) res.setHeader?.(k, v);
   if (!rl.allowed) {
     res.status(429).json({ code: 1, stderr: `Rate limit exceeded (${RATE_LIMIT_PER_MIN}/min for page rendering — this is expensive to run). Try again shortly.\n` });

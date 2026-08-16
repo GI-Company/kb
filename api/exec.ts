@@ -68,7 +68,7 @@ export default async function handler(req: any, res: any) {
     return;
   }
 
-  const rl = checkRateLimit(`exec:${getClientIp(req)}`, RATE_LIMIT_PER_MIN);
+  const rl = await checkRateLimit(`exec:${getClientIp(req)}`, RATE_LIMIT_PER_MIN);
   res.setHeader?.('x-ratelimit-limit', String(rl.limit));
   res.setHeader?.('x-ratelimit-remaining', String(rl.remaining));
   if (!rl.allowed) {

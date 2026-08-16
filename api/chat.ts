@@ -33,7 +33,7 @@ export default async function handler(req: Request): Promise<Response> {
     return jsonError(500, 'GROQ_API_KEY is not configured on the server. Set it in your Vercel project env vars.');
   }
 
-  const rl = checkRateLimit(`chat:${getClientIp(req)}`, RATE_LIMIT_PER_MIN);
+  const rl = await checkRateLimit(`chat:${getClientIp(req)}`, RATE_LIMIT_PER_MIN);
   if (!rl.allowed) {
     return jsonError(429, `Rate limit exceeded (${RATE_LIMIT_PER_MIN}/min). Try again shortly.`, rateLimitResponseHeaders(rl));
   }

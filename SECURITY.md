@@ -113,16 +113,16 @@ denying camera/mic/geolocation/payment/USB, and a CSP.
 | Control | Status |
 |---|---|
 | Guest quota, 15 min/day/IP | Enforced; **fails closed** in production if the service-role key is missing |
-| Per-IP rate limiting on `/api/chat`, `/api/exec` | **In-memory, per-instance — not distributed** |
+| Per-IP rate limiting on `/api/chat`, `/api/exec` | Distributed when Upstash is configured; per-instance otherwise |
 | Per-execution call budgets in `kernos.exec` | Enforced |
 
-> **Known hole: rate limiting is not distributed.** `lib/rateLimit.ts` keeps
-> counters in the memory of a single warm function instance, so limits are
-> per-instance rather than global. Under concurrency an attacker gets
-> roughly (limit x instances). Fixing it needs a shared store — Upstash
-> Redis is the standard pairing with Vercel. `lib/rateLimit.ts` is
-> deliberately the only place this decision lives, so the fix is a change to
-> `checkRateLimit`, not to every call site.
+> **Rate limiting is only global when Upstash is configured.** With
+> `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` set, the counter
+> is shared and the limit means what it says. Without them, `lib/rateLimit.ts`
+> falls back to a per-instance in-memory counter and the effective ceiling
+> is roughly (limit x concurrent instances). It also falls back that way if
+> Redis is configured but unreachable — a cache outage shouldn't take the
+> API down, and degraded limiting beats none.
 
 > **Accepted hole: the guest quota fails open on a transient DB error.**
 > Someone who can reliably break the database call gets unmetered access.
