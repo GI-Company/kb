@@ -11,6 +11,7 @@ import { TaskRunnerApp } from './apps/TaskRunner';
 import { AIChatApp } from './apps/AIChat';
 import { AgentMonitorApp } from './apps/AgentMonitor';
 import { LocalModelApp } from './apps/LocalModel';
+import { ClassifierApp } from './apps/Classifier';
 import { DynamicApplet } from './components/apps/DynamicApplet';
 import { AudioSystem } from './components/ui/AudioSystem';
 import { Desktop } from './components/ui/Desktop';
@@ -170,6 +171,7 @@ const App: React.FC = () => {
       case 'ai-chat': return <AIChatApp />;
       case 'agents': return <AgentMonitorApp />;
       case 'local-model': return <LocalModelApp />;
+      case 'classifier': return <ClassifierApp />;
       case 'applet': return <DynamicApplet appletId={data?.appletId} sourceCode={data?.sourceCode} />;
       case 'metrics': return <SystemMetricsApp />;
       case 'settings': return <SettingsApp />;

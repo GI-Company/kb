@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useOS } from '../../store';
-import { Terminal, Monitor, FileCode, HardDrive, Cpu, Menu, Workflow, Bot, Brain, Sparkles, Activity, Settings, Users, Clock as ClockIcon, X, Pin, PinOff, LogOut, Maximize, Minus, Play, Timer, Home, Grid3x3 } from 'lucide-react';
+import { Terminal, Monitor, FileCode, HardDrive, Cpu, Menu, Workflow, Bot, Brain, Sparkles, Activity, Settings, Users, Clock as ClockIcon, X, Pin, PinOff, LogOut, Maximize, Minus, Play, Timer, Home, Grid3x3, Tags } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useContextMenu } from './ContextMenu';
 import { formatRemaining } from '../../lib/guestUsage';
@@ -72,6 +72,7 @@ const APP_REGISTRY = [
   { id: 'monitor',      label: 'System Monitor',         color: 'text-orange-400' },
   { id: 'ai-chat',      label: 'AI Chat',                color: 'text-pink-400' },
   { id: 'local-model',  label: 'Local Model (BNLM)',     color: 'text-cyan-300' },
+  { id: 'classifier',   label: 'Intent Classifier',      color: 'text-emerald-400' },
   { id: 'agents',       label: 'Agent Monitor',          color: 'text-blue-400' },
   { id: 'tasks',        label: 'Task Engine',            color: 'text-white' },
   { id: 'metrics',      label: 'System Metrics',         color: 'text-cyan-400' },
@@ -92,6 +93,7 @@ const iconForAppId = (appId: string, size = 16) => {
     case 'tasks':        return <Workflow size={size} />;
     case 'ai-chat':      return <Brain size={size} />;
     case 'local-model':  return <Cpu size={size} />;
+    case 'classifier':   return <Tags size={size} />;
     case 'agents':       return <Bot size={size} />;
     case 'metrics':      return <Activity size={size} />;
     case 'settings':     return <Settings size={size} />;

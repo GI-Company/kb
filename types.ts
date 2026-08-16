@@ -16,7 +16,7 @@ export interface KernosError {
 export interface WindowState {
   id: string;
   title: string;
-  appId: 'terminal' | 'editor' | 'monitor' | 'files' | 'tasks' | 'ai-chat' | 'agents' | 'applet' | 'metrics' | 'settings' | 'multi-agents' | 'cde' | 'local-model' | 'timeline';
+  appId: 'terminal' | 'editor' | 'monitor' | 'files' | 'tasks' | 'ai-chat' | 'agents' | 'applet' | 'metrics' | 'settings' | 'multi-agents' | 'cde' | 'local-model' | 'classifier' | 'timeline';
   x: number;
   y: number;
   width: number;
