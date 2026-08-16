@@ -115,6 +115,34 @@ All of these assume a persistent host process, so none of them fits a stateless 
 
 Guest usage is metered rather than unlimited: `api/guest-usage.ts` enforces a 15-min/day/IP quota, which fails open when `SUPABASE_SERVICE_ROLE_KEY` isn't configured.
 
+## The local classifier: measured
+
+`src/bnlm/classifier.js` puts a second head on the same trunk — last-token pooling plus a linear layer, trained on labels instead of next-token prediction. It exists because a decoder-only LM is the wrong shape for a discrete decision: asking one to emit a label means parsing free-form text, and a model this small has no capacity to spare on being well-formed *and* correct. Prompted with `git s` after training on git commands, the generative model returns `obb\nmmaikaei`. Classification removes that failure mode — the output is a distribution over known labels and can't be malformed.
+
+Numbers for a 3-way intent router (`files` / `network` / `model`), trained in-browser on Groq-generated data, measured against a held-out 20% split:
+
+| | Value |
+|---|---|
+| Training examples | 266 (of 333 generated, balanced 111/111/111) |
+| Parameters | 8,331 |
+| Training time | 20 s |
+| Train accuracy | 92.9% |
+| **Held-out accuracy** | **88.1%** |
+| **Inference** | **0.76 ms** |
+
+Train and held-out sit within 5 points, so it's generalizing rather than memorizing. Sub-millisecond inference is what makes chaining several specialists practical.
+
+Two findings behind those defaults, both measured rather than assumed:
+
+- **Capacity is not the constraint; data is.** 102,147 params over 24 examples scored 33% — chance — while reporting 100% training accuracy and 100% confidence on wrong answers. 7,995 params over 668 examples scored 91%. `DEFAULT_CLASSIFIER_CONFIG` is small for this reason.
+- **Don't freeze the trunk.** `BNLM.freeze()` is for fine-tuning a pretrained LM; this trunk is randomly initialized, so freezing leaves the head as a linear probe over random projections. Identical config, 167 held-out examples: frozen 51.5%, fully trained 95.2%.
+
+### Why the glass box is not decoration
+
+`predict()` returns raw logits, the margin to the runner-up, and a plain-language explanation; `explain()` adds per-word causal attribution by occlusion — remove a word, measure how far the target probability falls. Not a similarity score against the pooled vector, which cannot work here: under last-token pooling the pooled vector *is* the last token's hidden state, so it would score 1.0 by construction and explain nothing.
+
+This earned its keep immediately. An earlier router hit 99.5% confidence on `download that site` → `network`, and attribution showed the decision rested entirely on **"that"** (0.964) — a stopword artifact of combinatorially generated training data. Accuracy and held-out score both looked fine, because the held-out split came from the same templates. Only attribution exposed it. `lib/datasetGen.ts`'s prompt now spends most of its length forbidding repeated sentence frames as a direct result.
+
 ## The terminal: real network commands
 
 `api/exec.ts` runs allowlisted coreutils in a per-invocation `/tmp` jail, but `curl`, `dig`, and `ping` aren't shelled out to — the Vercel image doesn't ship them. They're reimplemented natively in `lib/networkCommands.ts` and gated to signed-in accounts (`lib/verifyAuth.ts` validates the Supabase access token the client attaches; guests silently keep the coreutils-only sandbox).
