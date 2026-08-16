@@ -1,17 +1,37 @@
 import React, { useState, useEffect } from 'react';
-import { kernel } from '../services/kernel';
-import { Envelope } from '../types';
 import {
-  Settings, Cpu, Shield, Terminal, Box, Save, Plus, Trash2,
-  RefreshCw, Download, CheckCircle, AlertTriangle, Loader2, ArrowLeft
+  Cpu, Shield, Boxes, Info, RefreshCw, ArrowLeft, Loader2,
 } from 'lucide-react';
+import { getSession } from '../lib/auth';
+import { isSupabaseConfigured } from '../lib/supabaseClient';
+import { classifierRegistry, SavedClassifierMeta } from '../lib/classifierRegistry';
+import { localModel } from '../lib/localModel';
+import { SavedModelMeta } from '../lib/modelRegistry';
+import { CAPABILITY_INFO, Capability } from '../lib/terminalCapabilities';
 
 // ═══════════════════════════════════════════════════════════════
-//  KERNOS BIOS SETUP — System Configuration Utility
-//  Accessible during boot by pressing F2/DEL
+//  KERNOS BIOS — boot-time system diagnostics
+//  Accessible during boot by right-clicking
 // ═══════════════════════════════════════════════════════════════
+//
+// The previous version of this screen was a config editor for a system
+// that no longer exists: an "LM Studio Endpoint" field (replaced by Groq),
+// GitHub OAuth client id/secret (auth is Supabase now), an editable
+// agents.yaml with "hot-reload" (lib/agents.ts is a compiled TS file, not
+// a YAML the app rereads at runtime), and an allowlist you could add/remove
+// commands from (api/exec.ts's ALLOWED_COMMANDS is a hardcoded const — the
+// UI let you "add" a command that would still 126 the moment you tried it).
+// Every one of those fields talked to `bios.*` kernel topics that
+// services/kernel.ts's own routing comment says plainly have no backend in
+// this version — so every save silently vanished and every read stayed
+// permanently blank. A BIOS that lies about what it configures is worse
+// than no BIOS.
+//
+// This version shows only things that are true right now, sourced from the
+// same modules the rest of the app reads from — nothing routes through the
+// bus, because there is nothing on the other end of it for any of this.
 
-type BIOSTab = 'system' | 'allowlist' | 'agents' | 'firmware';
+type BIOSTab = 'system' | 'capabilities' | 'models' | 'allowlist';
 
 interface BIOSSetupProps {
   onExit: () => void;
@@ -20,114 +40,42 @@ interface BIOSSetupProps {
 export const BIOSSetup: React.FC<BIOSSetupProps> = ({ onExit }) => {
   const [activeTab, setActiveTab] = useState<BIOSTab>('system');
 
-  // System config
-  const [sysConfig, setSysConfig] = useState<Record<string, string>>({});
-  const [sysInfo, setSysInfo] = useState<Record<string, any>>({});
-  const [configSaving, setConfigSaving] = useState(false);
+  const [signedIn, setSignedIn] = useState<boolean | null>(null);
+  const [classifiers, setClassifiers] = useState<SavedClassifierMeta[] | null>(null);
+  const [models, setModels] = useState<SavedModelMeta[] | null>(null);
 
-  // Allowlist
-  const [commands, setCommands] = useState<string[]>([]);
-  const [newCommand, setNewCommand] = useState('');
+  const [allowlistText, setAllowlistText] = useState<string | null>(null);
+  const [allowlistError, setAllowlistError] = useState('');
+  const [allowlistLoading, setAllowlistLoading] = useState(false);
 
-  // Agents YAML
-  const [agentsYaml, setAgentsYaml] = useState('');
-  const [agentsSaving, setAgentsSaving] = useState(false);
-  const [agentsMessage, setAgentsMessage] = useState('');
-
-  // Firmware
-  const [firmware, setFirmware] = useState<Record<string, any>>({});
-  const [firmwareSnapshot, setFirmwareSnapshot] = useState('');
-
-  // Status messages
-  const [statusMsg, setStatusMsg] = useState('');
-
-  // Connection status
-  const [connected, setConnected] = useState(false);
-
-  // ── Wait for WebSocket → then load all BIOS data ──
   useEffect(() => {
-    const fetchAll = () => {
-      kernel.publish('bios.sysconfig:read', {});
-      kernel.publish('bios.sysinfo', {});
-      kernel.publish('bios.allowlist:read', {});
-      kernel.publish('bios.agents:read', {});
-      kernel.publish('bios.firmware:check', {});
-    };
-
-    // Poll until the kernel WS is live
-    const pollId = setInterval(() => {
-      if (kernel.isLive) {
-        setConnected(true);
-        fetchAll();
-        clearInterval(pollId);
-      }
-    }, 500);
-
-    // If already live, fetch immediately
-    if (kernel.isLive) {
-      setConnected(true);
-      fetchAll();
-      clearInterval(pollId);
-    }
-
-    // Also listen for system.connect event in case it connects mid-poll
-    const unsub = kernel.subscribe((env: Envelope) => {
-      if (env.topic === 'system.connect') {
-        setConnected(true);
-        setTimeout(fetchAll, 300); // Brief delay for auth handshake
-      }
-
-      const p = env.payload as any;
-
-      if (env.topic === 'bios.sysconfig:resp' && !p?.success) {
-        setSysConfig(p || {});
-      }
-      if (env.topic === 'bios.sysconfig:resp' && p?.success) {
-        setConfigSaving(false);
-        showStatus('✅ Configuration saved');
-      }
-      if (env.topic === 'bios.sysinfo:resp') {
-        setSysInfo(p || {});
-      }
-      if (env.topic === 'bios.allowlist:resp') {
-        if (p?.commands) {
-          setCommands(p.commands);
-        }
-        if (p?.success) {
-          kernel.publish('bios.allowlist:read', {});
-          showStatus(p.action === 'added' ? `✅ Added: ${p.command}` : `❌ Removed: ${p.command}`);
-        }
-      }
-      if (env.topic === 'bios.agents:resp') {
-        if (p?.content) {
-          setAgentsYaml(p.content);
-        }
-        if (p?.success) {
-          setAgentsSaving(false);
-          setAgentsMessage(p.message || 'Saved');
-          showStatus('✅ agents.yaml saved — hot-reload triggered');
-        }
-        if (p?.error) {
-          setAgentsSaving(false);
-          setAgentsMessage('❌ ' + p.error);
-        }
-      }
-      if (env.topic === 'bios.firmware:resp') {
-        if (p?.type === 'export') {
-          setFirmwareSnapshot(p.snapshot);
-        } else {
-          setFirmware(p || {});
-        }
-      }
-    });
-
-    return () => {
-      clearInterval(pollId);
-      unsub();
-    };
+    getSession().then(s => setSignedIn(s !== null));
+    classifierRegistry.list().then(setClassifiers).catch(() => setClassifiers([]));
+    // localModel's registry list doesn't need a real user id to enumerate
+    // what's in this browser's IndexedDB — 'guest' is a safe default that
+    // matches what a guest session already passes everywhere else.
+    localModel.listSaved('guest').then(setModels).catch(() => setModels([]));
   }, []);
 
-  // ESC key exits BIOS
+  const fetchAllowlist = () => {
+    setAllowlistLoading(true);
+    setAllowlistError('');
+    fetch('/api/exec', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd: 'help' }),
+    })
+      .then(res => res.json())
+      .then(data => setAllowlistText(data.stdout || data.stderr || '(empty response)'))
+      .catch(err => setAllowlistError(err?.message || 'Could not reach /api/exec'))
+      .finally(() => setAllowlistLoading(false));
+  };
+
+  useEffect(() => {
+    if (activeTab === 'allowlist' && allowlistText === null && !allowlistLoading) fetchAllowlist();
+  }, [activeTab]);
+
+  // ESC exits BIOS, same as before.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onExit();
@@ -136,57 +84,14 @@ export const BIOSSetup: React.FC<BIOSSetupProps> = ({ onExit }) => {
     return () => window.removeEventListener('keydown', handler);
   }, [onExit]);
 
-  const showStatus = (msg: string) => {
-    setStatusMsg(msg);
-    setTimeout(() => setStatusMsg(''), 3000);
-  };
-
-  const handleSaveConfig = (key: string, value: string) => {
-    setConfigSaving(true);
-    kernel.publish('bios.sysconfig:set', { key, value });
-    setSysConfig(prev => ({ ...prev, [key]: value }));
-  };
-
-  const handleAddCommand = () => {
-    if (!newCommand.trim()) return;
-    kernel.publish('bios.allowlist:add', { command: newCommand.trim() });
-    setNewCommand('');
-  };
-
-  const handleRemoveCommand = (cmd: string) => {
-    kernel.publish('bios.allowlist:remove', { command: cmd });
-  };
-
-  const handleSaveAgents = () => {
-    setAgentsSaving(true);
-    setAgentsMessage('');
-    kernel.publish('bios.agents:write', { content: agentsYaml });
-  };
-
-  const handleExportFirmware = () => {
-    kernel.publish('bios.firmware:export', {});
-  };
-
   const tabs: { id: BIOSTab; label: string; icon: React.ReactNode }[] = [
-    { id: 'system', label: 'System Config', icon: <Settings size={14} /> },
-    { id: 'allowlist', label: 'Command Allowlist', icon: <Shield size={14} /> },
-    { id: 'agents', label: 'AI Agents', icon: <Cpu size={14} /> },
-    { id: 'firmware', label: 'Firmware', icon: <Box size={14} /> },
+    { id: 'system', label: 'System', icon: <Info size={14} /> },
+    { id: 'capabilities', label: 'Capabilities', icon: <Shield size={14} /> },
+    { id: 'models', label: 'Local Models', icon: <Boxes size={14} /> },
+    { id: 'allowlist', label: 'Sandboxed Exec', icon: <Cpu size={14} /> },
   ];
 
-  const configFields = [
-    { key: 'root_path', label: 'Root Filesystem Path', desc: 'Base path for VFS operations' },
-    { key: 'lm_endpoint', label: 'LM Studio Endpoint', desc: 'URL for the local LLM API' },
-    { key: 'ai_model', label: 'Default AI Model', desc: 'Model ID for all agents' },
-    { key: 'theme', label: 'UI Theme', desc: 'dark, light, or custom' },
-    { key: 'font_size', label: 'Font Size', desc: 'Base font size in pixels' },
-    { key: 'github_client_id', label: 'GitHub OAuth Client ID', desc: 'For OAuth authentication' },
-    { key: 'github_client_secret', label: 'GitHub OAuth Secret', desc: 'OAuth client secret' },
-  ];
-
-  // ═══════════════════════════════════════════════════
-  //  RENDER
-  // ═══════════════════════════════════════════════════
+  const CAPABILITY_ORDER: Capability[] = ['vfs', 'vfs:write', 'model:local', 'model:cloud', 'python', 'net', 'exec'];
 
   return (
     <div className="h-screen w-screen bg-[#000810] text-white font-mono flex flex-col select-none overflow-hidden">
@@ -197,8 +102,8 @@ export const BIOSSetup: React.FC<BIOSSetupProps> = ({ onExit }) => {
             <Cpu size={16} className="text-cyan-400" />
           </div>
           <div>
-            <div className="text-sm font-bold text-cyan-400 tracking-wider">KERNOS BIOS SETUP</div>
-            <div className="text-[9px] text-gray-600">System Configuration Utility v1.0</div>
+            <div className="text-sm font-bold text-cyan-400 tracking-wider">KERNOS OE</div>
+            <div className="text-[9px] text-gray-600">Boot Diagnostics — read-only, sourced live</div>
           </div>
         </div>
         <div className="flex-1" />
@@ -207,7 +112,7 @@ export const BIOSSetup: React.FC<BIOSSetupProps> = ({ onExit }) => {
           className="flex items-center gap-2 px-3 py-1.5 rounded bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white text-xs transition-colors border border-white/5"
         >
           <ArrowLeft size={12} />
-          Exit BIOS → Boot
+          Exit → Boot
         </button>
       </div>
 
@@ -231,193 +136,161 @@ export const BIOSSetup: React.FC<BIOSSetupProps> = ({ onExit }) => {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-6">
-        {/* ── System Config Tab ── */}
+        {/* ── System ── */}
         {activeTab === 'system' && (
-          <div className="max-w-2xl">
-            <h3 className="text-sm font-bold text-cyan-400 mb-4 uppercase tracking-wider">System Configuration</h3>
+          <div className="max-w-2xl space-y-4">
+            <div className="bg-cyan-500/5 border border-cyan-900/20 rounded-lg p-4 text-xs leading-relaxed text-gray-400">
+              A browser-hosted operating environment: host-mediated services, worker
+              sandboxes, small trained specialists, cloud for hard reasoning. The
+              browser is the HAL; Kernos is the layer on top of it — bus, VFS,
+              capabilities, agents.
+            </div>
 
-            {/* System Info Box */}
-            <div className="bg-cyan-500/5 border border-cyan-900/20 rounded-lg p-4 mb-6">
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                <div><span className="text-gray-500">Version:</span> <span className="text-cyan-300">{sysInfo.version || '—'}</span></div>
-                <div><span className="text-gray-500">Agents:</span> <span className="text-cyan-300">{sysInfo.agents_loaded || '—'}</span></div>
-                <div><span className="text-gray-500">Allowlist:</span> <span className="text-cyan-300">{sysInfo.allowlist_size || '—'} commands</span></div>
-                <div><span className="text-gray-500">Users:</span> <span className="text-cyan-300">{sysInfo.user_count || '0'}</span></div>
-                <div><span className="text-gray-500">Vector Chunks:</span> <span className="text-cyan-300">{sysInfo.vector_chunks || '—'}</span></div>
-                <div><span className="text-gray-500">Data Dir:</span> <span className="text-cyan-300 text-[10px]">{sysInfo.data_dir || '—'}</span></div>
+            <div className="bg-white/[0.02] border border-white/5 rounded-lg p-4">
+              <div className="text-[10px] text-gray-600 uppercase tracking-wider mb-3">This Session</div>
+              <div className="grid grid-cols-2 gap-y-2 text-xs">
+                <span className="text-gray-500">Account</span>
+                <span className="text-cyan-300">{signedIn === null ? '…' : signedIn ? 'Signed in' : 'Guest'}</span>
+
+                <span className="text-gray-500">Filesystem backend</span>
+                <span className="text-cyan-300">
+                  {signedIn ? 'Supabase (Postgres, synced across devices)' : 'IndexedDB / localStorage (this browser only)'}
+                </span>
+
+                <span className="text-gray-500">Supabase configured</span>
+                <span className="text-cyan-300">{isSupabaseConfigured ? 'yes' : 'no — guest mode is permanent on this deployment'}</span>
+
+                <span className="text-gray-500">Viewport</span>
+                <span className="text-cyan-300">{window.innerWidth}×{window.innerHeight}</span>
+
+                <span className="text-gray-500">Touch points</span>
+                <span className="text-cyan-300">{navigator.maxTouchPoints ?? 0}</span>
+
+                <span className="text-gray-500">User agent</span>
+                <span className="text-cyan-300 text-[10px] break-all">{navigator.userAgent}</span>
               </div>
             </div>
 
-            {/* Config Fields */}
-            <div className="space-y-3">
-              {configFields.map(field => (
-                <div key={field.key} className="bg-white/[0.02] border border-white/5 rounded-lg p-3">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[11px] text-gray-400 font-bold uppercase tracking-wider">{field.label}</span>
-                    <span className="text-[9px] text-gray-700">{field.desc}</span>
-                  </div>
-                  <input
-                    type={field.key.includes('secret') ? 'password' : 'text'}
-                    value={sysConfig[field.key] || ''}
-                    onChange={e => setSysConfig(prev => ({ ...prev, [field.key]: e.target.value }))}
-                    onBlur={e => {
-                      if (e.target.value !== '') handleSaveConfig(field.key, e.target.value);
-                    }}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter') handleSaveConfig(field.key, sysConfig[field.key] || '');
-                    }}
-                    className="w-full bg-black/50 border border-white/10 rounded px-3 py-1.5 text-xs text-white outline-none focus:border-cyan-500/50 transition-colors"
-                    placeholder={`Enter ${field.label.toLowerCase()}...`}
-                  />
-                </div>
-              ))}
+            <div className="bg-white/[0.02] border border-white/5 rounded-lg p-4">
+              <div className="text-[10px] text-gray-600 uppercase tracking-wider mb-3">Explicitly Not Here</div>
+              <ul className="text-xs text-gray-500 space-y-1 list-disc list-inside">
+                <li>A giant in-tab LLM — local models are small, trained specialists (see Local Models)</li>
+                <li>Semantic search over the classifier trunk — measured, rejected (see BUILTINS.md)</li>
+                <li>Package installs in the Python runtime — off behind a flag pending a CSP decision</li>
+                <li>A mutable command allowlist — the sandboxed exec list is a fixed const, shown read-only under Sandboxed Exec</li>
+              </ul>
             </div>
           </div>
         )}
 
-        {/* ── Allowlist Tab ── */}
-        {activeTab === 'allowlist' && (
+        {/* ── Capabilities ── */}
+        {activeTab === 'capabilities' && (
           <div className="max-w-2xl">
-            <h3 className="text-sm font-bold text-cyan-400 mb-4 uppercase tracking-wider">
-              Command Allowlist ({commands.length} commands)
-            </h3>
-
-            {/* Add command */}
-            <div className="flex gap-2 mb-4">
-              <input
-                type="text"
-                value={newCommand}
-                onChange={e => setNewCommand(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleAddCommand()}
-                className="flex-1 bg-black/50 border border-white/10 rounded px-3 py-2 text-xs text-white outline-none focus:border-cyan-500/50"
-                placeholder="Add a command (e.g. docker, kubectl, terraform)..."
-              />
-              <button
-                onClick={handleAddCommand}
-                className="px-4 py-2 rounded bg-cyan-500/20 text-cyan-400 text-xs font-bold hover:bg-cyan-500/30 transition-colors flex items-center gap-1"
-              >
-                <Plus size={12} /> Add
-              </button>
-            </div>
-
-            {/* Command grid */}
-            <div className="grid grid-cols-4 gap-1.5">
-              {commands.map(cmd => (
-                <div
-                  key={cmd}
-                  className="flex items-center justify-between px-2.5 py-1.5 bg-white/[0.03] border border-white/5 rounded text-xs group hover:border-red-500/30 transition-colors"
-                >
-                  <span className="text-gray-300 font-mono">{cmd}</span>
-                  <button
-                    onClick={() => handleRemoveCommand(cmd)}
-                    className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-all"
-                  >
-                    <Trash2 size={10} />
-                  </button>
-                </div>
-              ))}
+            <h3 className="text-sm font-bold text-cyan-400 mb-1 uppercase tracking-wider">Capability Table</h3>
+            <p className="text-[10px] text-gray-600 mb-4">
+              What this session can do, and what gates it — the same table `can` and `policy` read in the terminal.
+              Not a privilege level: a declared surface.
+            </p>
+            <div className="space-y-2">
+              {CAPABILITY_ORDER.map(cap => {
+                const info = CAPABILITY_INFO[cap];
+                const locked = info.gatedBy === 'signed-in' && signedIn === false;
+                return (
+                  <div key={cap} className="bg-white/[0.02] border border-white/5 rounded-lg p-3 flex items-start justify-between gap-4">
+                    <div>
+                      <div className="text-xs font-bold text-gray-200">{cap}</div>
+                      <div className="text-[10px] text-gray-500 mt-0.5">{info.description}</div>
+                    </div>
+                    <div className={`text-[10px] whitespace-nowrap px-2 py-1 rounded ${
+                      locked ? 'bg-amber-500/10 text-amber-400' : 'bg-emerald-500/10 text-emerald-400'
+                    }`}>
+                      {info.gatedBy === 'none' ? 'always available'
+                        : info.gatedBy === 'rate-limit' ? 'available, rate-limited'
+                        : locked ? 'sign in to unlock' : 'available (signed in)'}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
 
-        {/* ── Agents YAML Tab ── */}
-        {activeTab === 'agents' && (
-          <div className="max-w-3xl h-full flex flex-col">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-bold text-cyan-400 uppercase tracking-wider">
-                AI Agent Configuration (agents.yaml)
+        {/* ── Local Models ── */}
+        {activeTab === 'models' && (
+          <div className="max-w-2xl space-y-6">
+            <div>
+              <h3 className="text-sm font-bold text-cyan-400 mb-3 uppercase tracking-wider">
+                Saved Classifiers {classifiers && `(${classifiers.length})`}
               </h3>
-              <div className="flex items-center gap-2">
-                {agentsMessage && (
-                  <span className="text-[10px] text-green-400">{agentsMessage}</span>
-                )}
-                <button
-                  onClick={handleSaveAgents}
-                  disabled={agentsSaving}
-                  className="px-4 py-1.5 rounded bg-cyan-500/20 text-cyan-400 text-xs font-bold hover:bg-cyan-500/30 disabled:opacity-50 transition-colors flex items-center gap-1"
-                >
-                  {agentsSaving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
-                  Save & Hot-Reload
-                </button>
-              </div>
-            </div>
-            <div className="text-[10px] text-gray-600 mb-2">
-              Editing this file will automatically hot-reload all AI agents (3s debounce)
-            </div>
-            <textarea
-              value={agentsYaml}
-              onChange={e => setAgentsYaml(e.target.value)}
-              className="flex-1 min-h-[400px] bg-black/50 border border-white/10 rounded-lg p-4 text-xs text-gray-300 font-mono outline-none focus:border-cyan-500/30 resize-none leading-5"
-              spellCheck={false}
-            />
-          </div>
-        )}
-
-        {/* ── Firmware Tab ── */}
-        {activeTab === 'firmware' && (
-          <div className="max-w-2xl">
-            <h3 className="text-sm font-bold text-cyan-400 mb-4 uppercase tracking-wider">Firmware & Updates</h3>
-
-            {/* Current version */}
-            <div className="bg-white/[0.02] border border-white/5 rounded-lg p-4 mb-4">
-              <div className="flex items-center gap-3 mb-3">
-                {firmware.up_to_date ? (
-                  <CheckCircle size={20} className="text-green-400" />
-                ) : (
-                  <AlertTriangle size={20} className="text-amber-400" />
-                )}
-                <div>
-                  <div className="text-sm font-bold text-white">
-                    {firmware.up_to_date ? 'System is up to date' : 'Update available'}
-                  </div>
-                  <div className="text-[10px] text-gray-500">
-                    Current: v{firmware.current_version || '—'} • Latest: v{firmware.latest_version || '—'}
-                  </div>
-                </div>
-              </div>
-              {firmware.changelog && (
-                <div className="text-xs text-gray-400 bg-black/30 rounded p-3 mt-2">
-                  <span className="text-[10px] text-gray-600 uppercase tracking-wider">Changelog:</span>
-                  <div className="mt-1">{firmware.changelog}</div>
+              {classifiers === null ? (
+                <div className="text-xs text-gray-600 flex items-center gap-2"><Loader2 size={12} className="animate-spin" /> Reading IndexedDB…</div>
+              ) : classifiers.length === 0 ? (
+                <div className="text-xs text-gray-600">None yet — train one in the Intent Classifier app.</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {classifiers.map(c => (
+                    <div key={c.name} className="flex items-center justify-between px-3 py-2 bg-white/[0.02] border border-white/5 rounded text-xs">
+                      <span className="text-gray-200 font-bold">{c.name}</span>
+                      <span className="text-gray-500">
+                        {c.labels.join(', ')} · {c.paramCount.toLocaleString()} params · {c.exampleCount} examples
+                        {c.heldOutAccuracy !== undefined && ` · held-out ${(c.heldOutAccuracy * 100).toFixed(1)}%`}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
 
-            {/* Actions */}
-            <div className="flex gap-3 mb-4">
+            <div>
+              <h3 className="text-sm font-bold text-cyan-400 mb-3 uppercase tracking-wider">
+                Saved Generative Models {models && `(${models.length})`}
+              </h3>
+              {models === null ? (
+                <div className="text-xs text-gray-600 flex items-center gap-2"><Loader2 size={12} className="animate-spin" /> Reading IndexedDB…</div>
+              ) : models.length === 0 ? (
+                <div className="text-xs text-gray-600">None yet — train one in the Local Model app.</div>
+              ) : (
+                <div className="space-y-1.5">
+                  {models.map(m => (
+                    <div key={m.name} className="flex items-center justify-between px-3 py-2 bg-white/[0.02] border border-white/5 rounded text-xs">
+                      <span className="text-gray-200 font-bold">{m.name}</span>
+                      <span className="text-gray-500">{m.paramCount.toLocaleString()} params · vocab {m.vocabSize}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Sandboxed Exec allowlist ── */}
+        {activeTab === 'allowlist' && (
+          <div className="max-w-2xl">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="text-sm font-bold text-cyan-400 uppercase tracking-wider">Sandboxed Exec</h3>
               <button
-                onClick={() => kernel.publish('bios.firmware:check', {})}
-                className="px-4 py-2 rounded bg-white/5 hover:bg-white/10 text-gray-400 text-xs transition-colors flex items-center gap-2 border border-white/5"
+                onClick={fetchAllowlist}
+                disabled={allowlistLoading}
+                className="flex items-center gap-1.5 px-3 py-1 rounded bg-white/5 hover:bg-white/10 text-gray-400 text-[10px] transition-colors disabled:opacity-50"
               >
-                <RefreshCw size={12} /> Check for Updates
-              </button>
-              <button
-                onClick={handleExportFirmware}
-                className="px-4 py-2 rounded bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 text-xs transition-colors flex items-center gap-2 border border-cyan-900/20"
-              >
-                <Download size={12} /> Export Firmware Snapshot
+                <RefreshCw size={10} className={allowlistLoading ? 'animate-spin' : ''} /> Refetch
               </button>
             </div>
-
-            {/* Firmware snapshot */}
-            {firmwareSnapshot && (
-              <div className="mt-4">
-                <div className="text-[10px] text-gray-600 uppercase tracking-wider mb-2">Exported Firmware Snapshot</div>
-                <textarea
-                  value={firmwareSnapshot}
-                  readOnly
-                  className="w-full h-64 bg-black/50 border border-white/10 rounded-lg p-3 text-[10px] text-gray-400 font-mono outline-none resize-none"
-                />
-                <button
-                  onClick={() => {
-                    navigator.clipboard.writeText(firmwareSnapshot);
-                    showStatus('📋 Copied to clipboard');
-                  }}
-                  className="mt-2 px-3 py-1.5 rounded bg-white/5 text-gray-500 text-[10px] hover:text-white transition-colors"
-                >
-                  Copy to Clipboard
-                </button>
-              </div>
+            <p className="text-[10px] text-gray-600 mb-4">
+              Fetched live from /api/exec's own `help` response — the actual allowlist the
+              server enforces, not a cached or editable copy. Every command here runs in a
+              fresh, disposable jail per invocation and never touches your real files.
+            </p>
+            {allowlistLoading && !allowlistText && (
+              <div className="text-xs text-gray-600 flex items-center gap-2"><Loader2 size={12} className="animate-spin" /> Fetching…</div>
+            )}
+            {allowlistError && (
+              <div className="text-xs text-red-400 bg-red-500/5 border border-red-900/30 rounded p-3">{allowlistError}</div>
+            )}
+            {allowlistText && (
+              <pre className="text-[11px] text-gray-300 bg-black/50 border border-white/10 rounded-lg p-4 whitespace-pre-wrap leading-5">
+                {allowlistText}
+              </pre>
             )}
           </div>
         )}
@@ -427,15 +300,10 @@ export const BIOSSetup: React.FC<BIOSSetupProps> = ({ onExit }) => {
       <div className="h-7 bg-[#001020] border-t border-cyan-900/20 flex items-center px-4 text-[10px] font-mono text-gray-600 shrink-0">
         <span className="flex items-center gap-1">
           <Cpu size={10} className="text-cyan-500" />
-          KERNOS BIOS v1.0
-        </span>
-        <span className="mx-3 flex items-center gap-1">
-          <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-green-400' : 'bg-yellow-400 animate-pulse'}`} />
-          {connected ? 'Connected' : 'Connecting...'}
+          Kernos OE
         </span>
         <div className="flex-1" />
-        {statusMsg && <span className="text-cyan-400 mx-4">{statusMsg}</span>}
-        <span>Press ESC or click "Exit BIOS" to continue boot</span>
+        <span>Press ESC or click "Exit → Boot" to continue boot</span>
       </div>
     </div>
   );

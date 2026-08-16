@@ -41,13 +41,18 @@ export const CinematicBoot: React.FC<{ onComplete: () => void }> = ({ onComplete
       setPhase('loading');
       await addLine('', 100);
       
+      // Real subsystems, not carried over from the old Go-microkernel design
+      // this project used to be. "Inference Engine (LM Studio)" was the
+      // same stale reference the old BIOS setup screen had as an editable
+      // field — LM Studio was replaced by Groq. "Semantic VFS Node" and
+      // "P2P WebRTC Gateway" were both explicit v1 cuts, never shipped.
       const modules = [
-        'Zero-Trust Auth Layer',
-        'Semantic VFS Node',
-        'P2P WebRTC Gateway',
-        'Inference Engine (LM Studio)',
-        'Agentic Task Scheduler',
-        'CDE Shadow Environment'
+        'Client VFS (IndexedDB / Supabase)',
+        'Groq Inference Gateway',
+        'BNLM Local Specialist Engine',
+        'Capability Bus + Trace',
+        'Sandboxed Exec Worker',
+        'Python Runtime (Pyodide)',
       ];
 
       for (let i = 0; i < modules.length; i++) {
