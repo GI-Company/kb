@@ -8,7 +8,7 @@ import { getCurrentUserId } from '../lib/auth';
 // 13MB Pyodide runtime is behind a dynamic import inside pythonRuntime and
 // is not fetched until someone actually types `python`.
 import { pythonRuntime, PYTHON_USAGE, GUEST_MESSAGE } from '../lib/pythonRuntime';
-import { INTEL_COMMANDS, runIntelCommand } from '../lib/terminalIntel';
+import { INTEL_COMMANDS, TRAINING_COMMANDS, runIntelCommand } from '../lib/terminalIntel';
 
 /**
  * Commands that write or delete. A natural-language translation of one of
@@ -93,7 +93,7 @@ export const TerminalApp: React.FC = () => {
     let matches: string[] = [];
     let dirPrefix = '';
     if (isCommandPosition) {
-      const known = [...VFS_COMMANDS, ...PIPE_AWARE_COMMANDS, ...PYTHON_COMMANDS, ...INTEL_COMMANDS, 'clear', 'help', 'render', 'curl', 'dig', 'ping'];
+      const known = [...VFS_COMMANDS, ...PIPE_AWARE_COMMANDS, ...PYTHON_COMMANDS, ...INTEL_COMMANDS, ...TRAINING_COMMANDS, 'clear', 'help', 'render', 'curl', 'dig', 'ping'];
       matches = [...new Set(known)].filter(c => c.startsWith(partial)).sort();
     } else {
       const found = await completePath(cwd, partial, userId);
@@ -388,6 +388,20 @@ export const TerminalApp: React.FC = () => {
         // classify/explain/trace — local model and bus, no network. See
         // BUILTINS.md for the contract these implement.
         runIntelCommand(command, args, { cwd, userId }).then(result => {
+          emit(result.stderr, true);
+          emit(result.stdout, false);
+        });
+      } else if (TRAINING_COMMANDS.has(command)) {
+        // correct/train — the teach loop. `train` retrains from scratch on
+        // seed + corrections and can take real seconds, so it gets the same
+        // running indicator python does; `correct` is one file append and
+        // doesn't need one. Neither is cancellable mid-flight yet: Ctrl+C
+        // during `train` prints ^C but the retrain keeps running to
+        // completion, same as pressing it with nothing in flight — it does
+        // not falsely claim to have stopped anything.
+        if (command === 'train') setRunning({ label: cmd, startedAt: Date.now() });
+        runIntelCommand(command, args, { cwd, userId }).then(result => {
+          if (command === 'train') setRunning(null);
           emit(result.stderr, true);
           emit(result.stdout, false);
         });

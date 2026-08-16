@@ -13,13 +13,24 @@
 
 import { Envelope } from '../types';
 import { kernel } from '../services/kernel';
-import { localClassifier, PredictResult } from './localClassifier';
+import { localClassifier, PredictResult, LabeledExample, splitHeldOut } from './localClassifier';
+import { classifierRegistry } from './classifierRegistry';
 import { CommandResult, Cwd, runFsCommand } from './terminalFs';
 
 export const INTEL_COMMANDS = new Set(['trace', 'classify', 'explain']);
 
+/**
+ * Mutating members of the intelligence family: `correct` appends to the
+ * VFS, `train` replaces a saved model's weights. Kept out of
+ * INTEL_COMMANDS, which gates pipeline eligibility and completion for the
+ * read-only trio above — piping into `correct` or `train` has no meaning.
+ */
+export const TRAINING_COMMANDS = new Set(['correct', 'train']);
+
 export const INTEL_USAGE: Record<string, string> = {
   trace: 'Usage: trace [--last <n>] [--topic <substring>] [--json]',
+  correct: 'Usage: correct <label> [--new-label] [--json]   (labels the last `classify` result)',
+  train: 'Usage: train --from-corrections <name> [--steps <n>] [--save-as <name>] [--json]',
   classify: 'Usage: classify <text> | classify -f <file> | ... | classify   [--json] [--model <name>] [--field <key>]',
   explain: 'Usage: explain [text] [--for <label>] [--granularity word|char] [--json]',
 };
@@ -147,8 +158,31 @@ function runTrace(args: string[]): CommandResult {
  */
 let lastClassified: string | null = null;
 
+/**
+ * Which saved classifier the last classify used, so `correct` knows what
+ * it is correcting and `train --from-corrections` knows what to retrain.
+ * Only set when a classify call passes `--model` explicitly — an
+ * unattributed correction is worse than a refused one, so this does not
+ * guess when a classifier was trained ad hoc and never named.
+ */
+let lastClassifierName: string | null = null;
+
+/**
+ * The full prediction behind lastClassified, not just its label — `correct`
+ * validates the corrected label against `lastPrediction.ranked`, the label
+ * set AT THE MOMENT OF THAT PREDICTION, rather than whatever `localClassifier`
+ * happens to have loaded right now. localClassifier is a singleton shared
+ * with the Classifier app; if a retrain happened there between `classify`
+ * and `correct`, "whatever's loaded now" would silently be the wrong model.
+ */
+let lastPrediction: PredictResult | null = null;
+
 /** Exported for tests; there is no reason for anything else to call it. */
-export function _resetIntelSession() { lastClassified = null; }
+export function _resetIntelSession() {
+  lastClassified = null;
+  lastClassifierName = null;
+  lastPrediction = null;
+}
 
 const NO_CLASSIFIER =
   'no classifier is loaded in this tab.\n' +
@@ -179,6 +213,10 @@ async function runClassify(args: string[], ctx: IntelContext): Promise<CommandRe
     } catch (err: any) {
       return bad('classify', `could not load model "${modelName}": ${err?.message || err}`);
     }
+    // Attribution for `correct`. Not cleared when a later call omits
+    // --model — the singleton stays loaded on this classifier either way,
+    // so the name stays accurate until something explicitly swaps it.
+    lastClassifierName = modelName;
   }
 
   // Where the text comes from: -f a file, stdin when piped, else argv.
@@ -206,6 +244,7 @@ async function runClassify(args: string[], ctx: IntelContext): Promise<CommandRe
       return bad('classify', /no classifier|not been trained/i.test(message) ? NO_CLASSIFIER : message);
     }
     lastClassified = text;
+    lastPrediction = result;
     out.push(asJson
       ? JSON.stringify({
           text,
@@ -288,6 +327,167 @@ async function runExplain(args: string[], ctx: IntelContext): Promise<CommandRes
   return ok(`${header}\n\n${bars(ranked)}\n${footer}\n`);
 }
 
+// ── correct / train ─────────────────────────────────────────────────────
+//
+// The teach loop from BUILTINS.md v1.1: a wrong classify is corrected, the
+// correction is recorded as a real file, and `train` folds it back in.
+// Deliberately narrow for v1 — see the doc for what this is not (no
+// per-keystroke online learning, no training on the model's own guesses).
+
+/** One JSONL file per named classifier, so `ls` shows what has been taught to what. */
+function correctionsPath(classifierName: string): string {
+  return `corrections.${classifierName.replace(/[^a-zA-Z0-9_.-]/g, '_')}.jsonl`;
+}
+
+async function runCorrect(args: string[], ctx: IntelContext): Promise<CommandResult> {
+  const asJson = args.includes('--json');
+  const allowNewLabel = args.includes('--new-label');
+  const label = positionals(args, []).join(' ').trim();
+
+  if (!lastClassified || !lastPrediction) {
+    return bad('correct',
+      'nothing to correct.\n' +
+      'Run `classify <text>` first — correct labels the decision it just made.');
+  }
+  if (!lastClassifierName) {
+    return bad('correct',
+      "the last classify wasn't run against a saved model, so there is nothing to attribute this correction to.\n" +
+      `Re-run it with a name: classify "${lastClassified}" --model <name>\n` +
+      '(save it first in the Classifier app if it has never been saved).');
+  }
+  if (!label) return bad('correct', `missing label\n${INTEL_USAGE.correct}`, 2);
+
+  // Validated against the label set AT THE MOMENT OF THAT PREDICTION, not
+  // whatever localClassifier has loaded right now — it's a singleton shared
+  // with the Classifier app, and a retrain there between classify and
+  // correct would otherwise make this check silently validate the wrong
+  // model's labels.
+  const knownLabels = lastPrediction.ranked.map(r => r.label);
+  if (!knownLabels.includes(label) && !allowNewLabel) {
+    return bad('correct',
+      `"${label}" is not one of this classifier's labels (${knownLabels.join(', ')}).\n` +
+      'Pass --new-label to teach it a label it has never decided between — that changes ' +
+      'what the classifier chooses among, not just which choice it made, so it is opt-in.');
+  }
+
+  const path = correctionsPath(lastClassifierName);
+  const { result: existing } = await runFsCommand('cat', [path], { cwd: ctx.cwd, userId: ctx.userId });
+  const priorCount = existing.code === 0 ? existing.stdout.split('\n').filter(l => l.trim() !== '').length : 0;
+
+  // Provenance beyond {text,label} — train reads only those two back out,
+  // tolerantly, so the extra fields are for a human reading the file with
+  // cat, not required by anything that consumes it.
+  const record = {
+    text: lastClassified,
+    label,
+    predictedLabel: lastPrediction.label,
+    confidence: Number(lastPrediction.confidence.toFixed(4)),
+    correctedAt: new Date().toISOString(),
+  };
+  const { result: written } = await runFsCommand('write', ['-a', path, JSON.stringify(record) + '\n'], { cwd: ctx.cwd, userId: ctx.userId });
+  if (written.code !== 0) return { ...written, stderr: written.stderr.replace(/^write:/, 'correct:') };
+
+  const total = priorCount + 1;
+  if (asJson) return ok(JSON.stringify({ ...record, classifier: lastClassifierName, totalCorrections: total }) + '\n');
+  return ok(
+    `Recorded: "${lastClassified}" → ${label} (predicted ${lastPrediction.label} at ${(lastPrediction.confidence * 100).toFixed(1)}%).\n` +
+    `${total} correction${total === 1 ? '' : 's'} saved for "${lastClassifierName}" (${path}).\n` +
+    `Run \`train --from-corrections ${lastClassifierName}\` when you have a few more.\n`
+  );
+}
+
+const DEFAULT_RETRAIN_STEPS = 200;
+
+async function runTrain(args: string[], ctx: IntelContext): Promise<CommandResult> {
+  const asJson = args.includes('--json');
+  const name = flagValue(args, '--from-corrections');
+  if (!name) {
+    return bad('train',
+      'train only retrains from recorded corrections right now — there is no bare `train`.\n' +
+      'To build a new classifier from scratch, use the Classifier app.\n' + INTEL_USAGE.train, 2);
+  }
+  const stepsArg = flagValue(args, '--steps');
+  const steps = stepsArg ? Number(stepsArg) : DEFAULT_RETRAIN_STEPS;
+  if (!Number.isFinite(steps) || steps < 1) return bad('train', `bad --steps value\n${INTEL_USAGE.train}`, 2);
+  const saveAsName = flagValue(args, '--save-as') ?? name;
+
+  // Loaded twice on purpose: classifierRegistry.load gives us the record
+  // (specifically heldOutAccuracy, for a before/after) without disturbing
+  // session state, then loadSaved actually activates it as the one
+  // currentExamples/currentConfig below read from.
+  const priorRecord = await classifierRegistry.load(name);
+  if (!priorRecord) {
+    return bad('train', `no saved classifier named "${name}".\nCheck the Classifier app's saved list, or the --model name used with classify.`);
+  }
+  try {
+    await localClassifier.loadSaved(name);
+  } catch (err: any) {
+    return bad('train', `could not load "${name}": ${err?.message || err}`);
+  }
+
+  const path = correctionsPath(name);
+  const { result: correctionsFile } = await runFsCommand('cat', [path], { cwd: ctx.cwd, userId: ctx.userId });
+  if (correctionsFile.code !== 0) {
+    return bad('train',
+      `no corrections recorded for "${name}" yet.\n` +
+      'Use `correct <label>` after a classify that looks wrong, then come back.');
+  }
+
+  let skipped = 0;
+  const corrections: LabeledExample[] = [];
+  for (const line of correctionsFile.stdout.split('\n')) {
+    if (line.trim() === '') continue;
+    try {
+      const record = JSON.parse(line);
+      if (typeof record.text === 'string' && typeof record.label === 'string') {
+        corrections.push({ text: record.text, label: record.label });
+        continue;
+      }
+    } catch { /* not a record */ }
+    skipped++;
+  }
+  if (corrections.length === 0) {
+    return bad('train', `"${path}" has no usable corrections — each line needs a "text" and "label" field.`);
+  }
+
+  // Train on confirmed labels only, never the model's own guesses — the
+  // corrections file can ONLY contain human-confirmed labels because
+  // `correct` is the only thing that writes to it. Retrained from scratch
+  // on seed + corrections rather than fine-tuned, which is simpler and
+  // avoids the model drifting from whatever its current weights happen to
+  // be; at this size (a few hundred steps) retraining is cheap.
+  const seed = localClassifier.currentExamples;
+  const config = localClassifier.currentConfig;
+  const merged = [...seed, ...corrections];
+  const { train: trainSet, test: testSet } = splitHeldOut(merged);
+
+  localClassifier.init(trainSet, config);
+  await localClassifier.train(steps);
+  const heldOutAfter = await localClassifier.evaluate(testSet);
+  await localClassifier.saveAs(saveAsName, heldOutAfter);
+
+  const heldOutBefore = priorRecord.heldOutAccuracy;
+  if (asJson) {
+    return ok(JSON.stringify({
+      name, savedAs: saveAsName, steps,
+      seedExamples: seed.length, corrections: corrections.length, skippedCorrections: skipped,
+      mergedExamples: merged.length,
+      heldOutBefore: heldOutBefore !== undefined ? Number(heldOutBefore.toFixed(4)) : null,
+      heldOutAfter: Number(heldOutAfter.toFixed(4)),
+    }) + '\n');
+  }
+
+  const beforePct = heldOutBefore !== undefined ? `${(heldOutBefore * 100).toFixed(1)}%` : 'unknown';
+  const skipNote = skipped ? ` (${skipped} line${skipped === 1 ? '' : 's'} skipped — not a valid record)` : '';
+  return ok(
+    `Loaded "${name}" (${seed.length} examples, held-out ${beforePct}).\n` +
+    `Found ${corrections.length} correction${corrections.length === 1 ? '' : 's'}${skipNote}. Merged: ${merged.length} examples.\n` +
+    `Retrained ${steps} steps. Held-out ${(heldOutAfter * 100).toFixed(1)}%` +
+    (heldOutBefore !== undefined ? ` (was ${beforePct}).\n` : '.\n') +
+    `Saved as "${saveAsName}".\n`
+  );
+}
+
 // ── dispatch ─────────────────────────────────────────────────────────────
 
 export async function runIntelCommand(command: string, args: string[], ctx: IntelContext): Promise<CommandResult> {
@@ -295,6 +495,8 @@ export async function runIntelCommand(command: string, args: string[], ctx: Inte
     case 'trace': return runTrace(args);
     case 'classify': return runClassify(args, ctx);
     case 'explain': return runExplain(args, ctx);
+    case 'correct': return runCorrect(args, ctx);
+    case 'train': return runTrain(args, ctx);
     default: return bad(command, 'not an intelligence command');
   }
 }

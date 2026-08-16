@@ -293,7 +293,7 @@ already written and measured.
 
 ---
 
-## v1.1 — teaching the specialist
+## v1.1 — teaching the specialist (shipped)
 
 The point of a local classifier is not that it is good on day one. It is
 that it is cheap, inspectable, and *correctable* — so the head of the

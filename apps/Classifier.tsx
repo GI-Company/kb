@@ -9,7 +9,7 @@
 // would actively mislead. Every train run here splits the data first.
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { localClassifier, LabeledExample, PredictResult, Attribution } from '../lib/localClassifier';
+import { localClassifier, LabeledExample, PredictResult, Attribution, splitHeldOut } from '../lib/localClassifier';
 import { generateLabeledExamples, describeDataset } from '../lib/datasetGen';
 import { SavedClassifierMeta } from '../lib/classifierRegistry';
 import { trackEvent } from '../lib/analytics';
@@ -18,15 +18,6 @@ import {
 } from 'lucide-react';
 
 type Status = 'idle' | 'generating' | 'training' | 'ready';
-
-/** Deterministic 80/20 split so a re-run is comparable rather than noise. */
-function split(examples: LabeledExample[], seedValue = 20260816) {
-  let seed = seedValue;
-  const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 0x100000000;
-  const shuffled = examples.map(e => [rnd(), e] as const).sort((a, b) => a[0] - b[0]).map(x => x[1]);
-  const cut = Math.floor(shuffled.length * 0.8);
-  return { train: shuffled.slice(0, cut), test: shuffled.slice(cut) };
-}
 
 export const ClassifierApp: React.FC = () => {
   const [labelsText, setLabelsText] = useState('files, network, model');
@@ -71,7 +62,7 @@ export const ClassifierApp: React.FC = () => {
       addLog(`Generated ${stats.total} examples (${Object.entries(stats.perLabel).map(([l, n]) => `${l}: ${n}`).join(', ')}).`);
 
       // Split BEFORE training so the reported accuracy means something.
-      const { train, test } = split(examples);
+      const { train, test } = splitHeldOut(examples);
       setStatus('training');
       const init = localClassifier.init(train);
       addLog(`Initialized ${init.paramCount.toLocaleString()} params, vocab ${init.vocabSize}.`);

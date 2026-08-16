@@ -65,6 +65,24 @@ export const DEFAULT_CLASSIFIER_CONFIG: ClassifierConfig = {
   batchSize: 16,
 };
 
+/**
+ * Deterministic 80/20 split so a re-run is comparable rather than noise.
+ *
+ * Shared between the Classifier app and the terminal's `train
+ * --from-corrections` so "held-out accuracy" means the same measurement
+ * everywhere it's reported, not a slightly different split per call site.
+ */
+export function splitHeldOut(
+  examples: LabeledExample[],
+  seedValue = 20260816
+): { train: LabeledExample[]; test: LabeledExample[] } {
+  let seed = seedValue;
+  const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 0x100000000;
+  const shuffled = examples.map(e => [rnd(), e] as const).sort((a, b) => a[0] - b[0]).map(x => x[1]);
+  const cut = Math.floor(shuffled.length * 0.8);
+  return { train: shuffled.slice(0, cut), test: shuffled.slice(cut) };
+}
+
 export interface ClassifierTrainResult {
   steps: number;
   finalLoss: number;
@@ -298,6 +316,16 @@ class LocalClassifierService {
         p.data.buffer.slice(p.data.byteOffset, p.data.byteOffset + p.data.byteLength)
       ),
     });
+  }
+
+  /**
+   * The examples the currently loaded classifier was built or restored
+   * from. Exposed so a caller can merge in new examples and retrain without
+   * having to keep its own copy of the seed set in sync — see the
+   * terminal's `train --from-corrections`.
+   */
+  get currentExamples(): LabeledExample[] {
+    return [...this.examples];
   }
 
   async listSaved(): Promise<SavedClassifierMeta[]> {

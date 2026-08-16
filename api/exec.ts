@@ -124,6 +124,9 @@ export default async function handler(req: any, res: any) {
         `  explain                why the classifier said that, word by word\n` +
         `  trace [--last <n>]     what the machine just did\n` +
         `  All three take --json for NDJSON records, and compose in pipes.\n\n` +
+        `  correct <label>        the last classify was wrong; teach it the right one\n` +
+        `  train --from-corrections <name>   retrain a saved classifier on its corrections\n` +
+        `  correct/train are not pipeline stages — they mutate a saved model, not a stream.\n\n` +
         `Composition (piped and redirected in your browser, never sent to the server):\n` +
         `  cmd | cmd   cmd > file   cmd >> file      (no &&, ||, ; or globbing)\n\n` +
         `Sandboxed commands (fresh temp dir per run, nothing persists):\n` +

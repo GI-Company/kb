@@ -8,17 +8,64 @@ vi.mock('../services/kernel', () => ({
 const predict = vi.fn();
 const explain = vi.fn();
 const loadSaved = vi.fn();
+const initFn = vi.fn();
+const trainFn = vi.fn();
+const evaluateFn = vi.fn();
+const saveAsFn = vi.fn();
+const currentExamplesFn = vi.fn(() => [] as any[]);
+const currentConfigFn = vi.fn(() => ({} as any));
 vi.mock('./localClassifier', () => ({
   localClassifier: {
     predict: (...a: any[]) => predict(...a),
     explain: (...a: any[]) => explain(...a),
     loadSaved: (...a: any[]) => loadSaved(...a),
+    init: (...a: any[]) => initFn(...a),
+    train: (...a: any[]) => trainFn(...a),
+    evaluate: (...a: any[]) => evaluateFn(...a),
+    saveAs: (...a: any[]) => saveAsFn(...a),
+    get currentExamples() { return currentExamplesFn(); },
+    get currentConfig() { return currentConfigFn(); },
+  },
+  // A trivial, deterministic split — what's tested here is that train/evaluate
+  // are called with the merged set and its complement, not the split's exact
+  // ratio (that's covered where splitHeldOut itself is defined).
+  // Math.floor, matching the real splitHeldOut, so the length this test
+  // asserts on isn't testing this mock's own arithmetic instead of the code
+  // under test.
+  splitHeldOut: (examples: any[]) => {
+    const cut = Math.floor(examples.length * 0.8);
+    return { train: examples.slice(0, cut), test: examples.slice(cut) };
   },
 }));
 
+const registryLoad = vi.fn();
+vi.mock('./classifierRegistry', () => ({
+  classifierRegistry: { load: (...a: any[]) => registryLoad(...a) },
+}));
+
+// A small in-memory VFS double, real enough that `correct` writing a
+// correction and `train` reading it back actually round-trips — the
+// interaction between the two commands is exactly what needs covering.
 const catResult = { stdout: '', stderr: '', code: 0 };
+const files = new Map<string, string>();
+const runFsCommandMock = vi.fn(async (command: string, args: string[]) => {
+  if (command === 'write') {
+    const append = args[0] === '-a';
+    const rest = append ? args.slice(1) : args;
+    const [path, text] = rest;
+    const prev = files.get(path) ?? '';
+    files.set(path, append ? prev + text : text);
+    return { result: { stdout: '', stderr: '', code: 0 }, cwd: [] };
+  }
+  if (command === 'cat') {
+    const [path] = args;
+    if (files.has(path)) return { result: { stdout: files.get(path)!, stderr: '', code: 0 }, cwd: [] };
+    return { result: catResult, cwd: [] };
+  }
+  return { result: catResult, cwd: [] };
+});
 vi.mock('./terminalFs', () => ({
-  runFsCommand: vi.fn(async () => ({ result: catResult, cwd: [] })),
+  runFsCommand: runFsCommandMock,
 }));
 
 const { runIntelCommand, _resetIntelSession } = await import('./terminalIntel');
@@ -33,6 +80,9 @@ beforeEach(() => {
   _resetIntelSession();
   catResult.stdout = '';
   catResult.code = 0;
+  files.clear();
+  currentExamplesFn.mockReturnValue([]);
+  currentConfigFn.mockReturnValue({});
 });
 
 describe('trace', () => {
@@ -195,5 +245,176 @@ describe('explain', () => {
     explain.mockResolvedValue(attribution);
     await runIntelCommand('explain', ['x', '--for', 'support'], ctx);
     expect(explain).toHaveBeenCalledWith('x', expect.objectContaining({ forLabel: 'support' }));
+  });
+});
+
+describe('correct', () => {
+  const prediction = {
+    label: 'files',
+    confidence: 0.94,
+    margin: 0.7,
+    ranked: [{ label: 'files', probability: 0.94 }, { label: 'network', probability: 0.06 }],
+    logits: [], pooledNorm: 1, explanation: '',
+  };
+
+  it('refuses when there is nothing to correct', async () => {
+    const r = await runIntelCommand('correct', ['network'], ctx);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/nothing to correct/);
+  });
+
+  // A correction has to know which saved model it belongs to, or a later
+  // retrain has nothing to attribute it to. Guessing would be worse than
+  // refusing.
+  it('refuses when the last classify was not attributed to a saved model', async () => {
+    predict.mockResolvedValue(prediction);
+    await runIntelCommand('classify', ['list', 'my', 'files'], ctx); // no --model
+    const r = await runIntelCommand('correct', ['network'], ctx);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/wasn't run against a saved model/);
+  });
+
+  it('needs a label', async () => {
+    predict.mockResolvedValue(prediction);
+    await runIntelCommand('classify', ['x', '--model', 'router'], ctx);
+    expect((await runIntelCommand('correct', [], ctx)).code).toBe(2);
+  });
+
+  // Validated against the label set the PREDICTION carried, not whatever
+  // localClassifier has loaded at the moment `correct` runs — the service
+  // is a singleton shared with the Classifier app UI, so "loaded right now"
+  // can silently be a different model than the one that made this call.
+  it('rejects an unknown label without --new-label', async () => {
+    predict.mockResolvedValue(prediction);
+    await runIntelCommand('classify', ['x', '--model', 'router'], ctx);
+    const r = await runIntelCommand('correct', ['billing'], ctx);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/not one of this classifier's labels/);
+    expect(r.stderr).toMatch(/--new-label/);
+  });
+
+  it('accepts an unknown label with --new-label', async () => {
+    predict.mockResolvedValue(prediction);
+    await runIntelCommand('classify', ['x', '--model', 'router'], ctx);
+    const r = await runIntelCommand('correct', ['billing', '--new-label'], ctx);
+    expect(r.code).toBe(0);
+  });
+
+  it('writes the correction to a file named after the classifier', async () => {
+    predict.mockResolvedValue(prediction);
+    await runIntelCommand('classify', ['ping', 'the', 'host', '--model', 'router-test'], ctx);
+    const r = await runIntelCommand('correct', ['network'], ctx);
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/Recorded:.*network/);
+    expect(r.stdout).toMatch(/predicted files at 94\.0%/);
+
+    const written = files.get('corrections.router-test.jsonl');
+    expect(written).toBeTruthy();
+    const record = JSON.parse(written!.trim());
+    expect(record).toMatchObject({ text: 'ping the host', label: 'network', predictedLabel: 'files' });
+  });
+
+  it('counts corrections across calls rather than always reporting one', async () => {
+    predict.mockResolvedValue(prediction);
+    await runIntelCommand('classify', ['a', '--model', 'router'], ctx);
+    const first = await runIntelCommand('correct', ['network'], ctx);
+    expect(first.stdout).toMatch(/1 correction saved/);
+
+    await runIntelCommand('classify', ['b', '--model', 'router'], ctx);
+    const second = await runIntelCommand('correct', ['network'], ctx);
+    expect(second.stdout).toMatch(/2 corrections saved/);
+  });
+
+  it('emits a record with --json', async () => {
+    predict.mockResolvedValue(prediction);
+    await runIntelCommand('classify', ['a', '--model', 'router'], ctx);
+    const r = await runIntelCommand('correct', ['network', '--json'], ctx);
+    expect(JSON.parse(r.stdout.trim())).toMatchObject({
+      label: 'network', classifier: 'router', totalCorrections: 1,
+    });
+  });
+});
+
+describe('train --from-corrections', () => {
+  it('has no bare mode', async () => {
+    expect((await runIntelCommand('train', [], ctx)).code).toBe(2);
+  });
+
+  it('rejects a bad --steps value', async () => {
+    const r = await runIntelCommand('train', ['--from-corrections', 'router', '--steps', 'lots'], ctx);
+    expect(r.code).toBe(2);
+  });
+
+  it('refuses an unknown saved classifier', async () => {
+    registryLoad.mockResolvedValue(undefined);
+    const r = await runIntelCommand('train', ['--from-corrections', 'ghost'], ctx);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/no saved classifier named "ghost"/);
+    expect(loadSaved).not.toHaveBeenCalled();
+  });
+
+  it('refuses when there are no corrections recorded yet', async () => {
+    registryLoad.mockResolvedValue({ heldOutAccuracy: 0.9 });
+    catResult.code = 1; // no corrections.router.jsonl in the fake VFS at all
+    const r = await runIntelCommand('train', ['--from-corrections', 'router'], ctx);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/no corrections recorded/);
+    expect(r.stderr).toMatch(/correct <label>/);
+  });
+
+  it('trains only on human-confirmed corrections, merged with the seed set', async () => {
+    registryLoad.mockResolvedValue({ heldOutAccuracy: 0.85 });
+    currentExamplesFn.mockReturnValue([{ text: 'seed one', label: 'files' }, { text: 'seed two', label: 'network' }]);
+    currentConfigFn.mockReturnValue({ dModel: 24, mixerType: 'linear' });
+    files.set('corrections.router.jsonl',
+      JSON.stringify({ text: 'new one', label: 'files' }) + '\n' +
+      'not json at all\n' +
+      JSON.stringify({ text: 'new two', label: 'network' }) + '\n'
+    );
+    evaluateFn.mockResolvedValue(0.93);
+
+    const r = await runIntelCommand('train', ['--from-corrections', 'router'], ctx);
+
+    expect(loadSaved).toHaveBeenCalledWith('router');
+    // 2 seed + 2 valid corrections = 4; the garbage line is skipped, not merged.
+    expect(initFn).toHaveBeenCalledWith(
+      expect.arrayContaining([{ text: 'seed one', label: 'files' }, { text: 'new one', label: 'files' }]),
+      { dModel: 24, mixerType: 'linear' }
+    );
+    expect(initFn.mock.calls[0][0]).toHaveLength(3); // 80% cut of 4 examples via the mocked split
+    expect(trainFn).toHaveBeenCalledWith(200); // default steps
+    expect(evaluateFn).toHaveBeenCalled();
+    expect(saveAsFn).toHaveBeenCalledWith('router', 0.93);
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/Found 2 corrections \(1 line skipped/);
+    expect(r.stdout).toMatch(/held-out 85\.0%/);
+    expect(r.stdout).toMatch(/Held-out 93\.0% \(was 85\.0%\)/);
+  });
+
+  it('honours --steps and --save-as', async () => {
+    registryLoad.mockResolvedValue({ heldOutAccuracy: 0.5 });
+    currentExamplesFn.mockReturnValue([{ text: 's', label: 'a' }]);
+    files.set('corrections.router.jsonl', JSON.stringify({ text: 'x', label: 'b' }) + '\n');
+    evaluateFn.mockResolvedValue(0.6);
+
+    await runIntelCommand('train', ['--from-corrections', 'router', '--steps', '50', '--save-as', 'router-v2'], ctx);
+
+    expect(trainFn).toHaveBeenCalledWith(50);
+    expect(saveAsFn).toHaveBeenCalledWith('router-v2', 0.6);
+  });
+
+  it('emits a summary record with --json', async () => {
+    registryLoad.mockResolvedValue({ heldOutAccuracy: 0.5 });
+    currentExamplesFn.mockReturnValue([{ text: 's', label: 'a' }]);
+    files.set('corrections.router.jsonl', JSON.stringify({ text: 'x', label: 'b' }) + '\n');
+    evaluateFn.mockResolvedValue(0.6);
+
+    const r = await runIntelCommand('train', ['--from-corrections', 'router', '--json'], ctx);
+    expect(JSON.parse(r.stdout.trim())).toMatchObject({
+      name: 'router', savedAs: 'router', seedExamples: 1, corrections: 1,
+      heldOutBefore: 0.5, heldOutAfter: 0.6,
+    });
   });
 });
