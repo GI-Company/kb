@@ -291,3 +291,42 @@ export async function runFsCommand(
       return keep(err(command, 'not a filesystem command'));
   }
 }
+
+/**
+ * Candidate completions for a partial path, relative to cwd. Returns the
+ * matching names (directories with a trailing slash) plus the prefix that
+ * should be preserved, so the caller can rebuild the full token.
+ *
+ * Splitting on the last `/` means `cd pro<Tab>` and `cat a/b/no<Tab>` are
+ * the same problem: list one directory, filter by the final segment.
+ */
+export async function completePath(
+  cwd: Cwd,
+  partial: string,
+  userId: string
+): Promise<{ prefix: string; matches: string[] }> {
+  const idx = partial.lastIndexOf('/');
+  const dirPart = idx === -1 ? '' : partial.slice(0, idx + 1);
+  const namePart = idx === -1 ? partial : partial.slice(idx + 1);
+
+  const dir = dirPart ? await resolveDir(cwd, dirPart, userId) : cwd;
+  if (typeof dir === 'string') return { prefix: dirPart, matches: [] };
+
+  const children = await vfs.list(dirId(dir), userId);
+  const matches = children
+    .filter(c => c.name.startsWith(namePart))
+    .map(c => (c.type === 'directory' ? c.name + '/' : c.name))
+    .sort();
+  return { prefix: dirPart, matches };
+}
+
+/** Longest common prefix, so Tab can advance partway on an ambiguous match. */
+export function commonPrefix(items: string[]): string {
+  if (items.length === 0) return '';
+  let prefix = items[0];
+  for (const item of items.slice(1)) {
+    while (!item.startsWith(prefix)) prefix = prefix.slice(0, -1);
+    if (!prefix) break;
+  }
+  return prefix;
+}

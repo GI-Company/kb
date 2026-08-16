@@ -47,34 +47,50 @@ describe('TerminalApp', () => {
     expect(input).toHaveFocus();
   });
 
-  it('sends terminal.typing for ghost commands after debounce', () => {
+  // Ghost predictions were removed: Terminal subscribed to terminal.predict,
+  // which nothing in the app has ever published, so the overlay could never
+  // appear. `terminal.typing` is no longer sent either.
+  it('does not publish typing events for a dead prediction feature', () => {
     render(<TerminalApp />);
     const input = screen.getByRole('textbox');
-
     fireEvent.change(input, { target: { value: 'git sta' } });
-    expect(mockPublish).not.toHaveBeenCalled();
-
-    act(() => { vi.advanceTimersByTime(300); });
-    expect(mockPublish).toHaveBeenCalledWith('terminal.typing', { input: 'git sta' });
+    act(() => { vi.advanceTimersByTime(500); });
+    expect(mockPublish).not.toHaveBeenCalledWith('terminal.typing', expect.anything());
   });
 
-  it('does not send terminal.typing for short input', () => {
+  // The speculative shadow engine always answered "miss", so it was a
+  // guaranteed extra round trip. Commands now go straight to the sandbox.
+  it('dispatches straight to vm.spawn with no shadow check', () => {
     render(<TerminalApp />);
     const input = screen.getByRole('textbox');
-
-    fireEvent.change(input, { target: { value: 'ab' } });
-    act(() => { vi.advanceTimersByTime(300); });
-    expect(mockPublish).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: 'whoami' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(mockPublish).not.toHaveBeenCalledWith('terminal.check_shadow', expect.anything());
+    expect(mockPublish).toHaveBeenCalledWith('vm.spawn', expect.objectContaining({ cmd: 'whoami' }));
   });
 
-  it('does not send terminal.typing for ? prefix (NL shell)', () => {
+  it('recalls the previous command with ArrowUp', () => {
     render(<TerminalApp />);
-    const input = screen.getByRole('textbox');
-
-    fireEvent.change(input, { target: { value: '? find large' } });
-    act(() => { vi.advanceTimersByTime(300); });
-    expect(mockPublish).not.toHaveBeenCalled();
+    const input = screen.getByRole('textbox') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'whoami' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    expect(input.value).toBe('whoami');
   });
+
+  // ArrowUp must not destroy a half-typed line.
+  it('ArrowDown restores the draft that ArrowUp stashed', () => {
+    render(<TerminalApp />);
+    const input = screen.getByRole('textbox') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'date' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.change(input, { target: { value: 'half-typed' } });
+    fireEvent.keyDown(input, { key: 'ArrowUp' });
+    expect(input.value).toBe('date');
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    expect(input.value).toBe('half-typed');
+  });
+
 
   it('routes ? prefix to sys.terminal.intent on Enter', () => {
     render(<TerminalApp />);

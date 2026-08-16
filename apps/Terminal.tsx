@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { kernel } from '../services/kernel';
 import { Envelope } from '../types';
-import { VFS_COMMANDS, runFsCommand, cwdPath, ROOT_CWD, Cwd } from '../lib/terminalFs';
-import { hasPipelineSyntax, parseLine, runPipeline } from '../lib/terminalPipeline';
+import { VFS_COMMANDS, runFsCommand, cwdPath, ROOT_CWD, Cwd, completePath, commonPrefix } from '../lib/terminalFs';
+import { hasPipelineSyntax, parseLine, runPipeline, PIPE_AWARE_COMMANDS, tokenize } from '../lib/terminalPipeline';
 import { getCurrentUserId } from '../lib/auth';
 
 interface Line {
@@ -18,8 +18,13 @@ export const TerminalApp: React.FC = () => {
     { id: 'init', type: 'output', content: 'Kernos OS [Version 1.0.0]\n(c) 2025 Kernos Foundation. All rights reserved.\n\nType "help" for commands.\nFilesystem commands (ls, cd, cat, mkdir, write...) act on your real files and persist.\nPrefix with "?" for natural language (e.g. ? show large files)\nSigned-in accounts also get curl/dig/ping/render — sign in from Settings for network access.\n', time: new Date().toLocaleTimeString() }
   ]);
   const [input, setInput] = useState('');
-  const [ghostPrediction, setGhostPrediction] = useState('');
-  const [pendingCmd, setPendingCmd] = useState<{ cmd: string, args: string[], reqId: string } | null>(null);
+  // Persisted so history survives a reload, like a real shell's.
+  // historyIndex === null means "typing a fresh line".
+  const [history, setHistory] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('kernos_terminal_history') || '[]'); } catch { return []; }
+  });
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+  const [draft, setDraft] = useState('');
   // What's currently in flight, so the prompt can show progress instead of
   // going silent. `render` in particular is a real headless-browser page
   // load and can take many seconds — with no feedback that reads as a hang.
@@ -39,26 +44,87 @@ export const TerminalApp: React.FC = () => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [lines]);
 
-  // Ghost Command: debounce typing and request predictions
   const handleInputChange = useCallback((value: string) => {
     setInput(value);
-    setGhostPrediction(''); // Clear while typing
-
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-
-    if (value.length >= 3 && !value.startsWith('?')) {
-      debounceRef.current = setTimeout(() => {
-        kernel.publish('terminal.typing', { input: value });
-      }, 300);
-    }
+    // Editing abandons history navigation, so the next ArrowUp starts from
+    // the newest entry rather than wherever you had scrolled to.
+    setHistoryIndex(null);
   }, []);
 
+  const remember = useCallback((command: string) => {
+    setHistory(prev => {
+      // Skip an immediate repeat, like a shell's HISTCONTROL=ignoredups.
+      const next = prev[prev.length - 1] === command ? prev : [...prev, command];
+      const capped = next.slice(-200);
+      try { localStorage.setItem('kernos_terminal_history', JSON.stringify(capped)); } catch { /* best-effort */ }
+      return capped;
+    });
+  }, []);
+
+  // Completes a command name in the first position, a VFS path anywhere
+  // else — only possible now that the terminal has a real cwd and real
+  // files to complete against.
+  const completeInput = useCallback(async () => {
+    if (!input || input.startsWith('?')) return;
+    const endsWithSpace = /\s$/.test(input);
+    const tokens = tokenize(input);
+    const isCommandPosition = tokens.length <= 1 && !endsWithSpace;
+    const partial = endsWithSpace ? '' : (tokens[tokens.length - 1] ?? '');
+
+    let matches: string[] = [];
+    let dirPrefix = '';
+    if (isCommandPosition) {
+      const known = [...VFS_COMMANDS, ...PIPE_AWARE_COMMANDS, 'clear', 'help', 'render', 'curl', 'dig', 'ping'];
+      matches = [...new Set(known)].filter(c => c.startsWith(partial)).sort();
+    } else {
+      const found = await completePath(cwd, partial, userId);
+      matches = found.matches;
+      dirPrefix = found.prefix;
+    }
+    if (matches.length === 0) return;
+
+    // One match completes outright; several advance to the longest shared
+    // prefix and list the options, the way a shell does.
+    const shared = matches.length === 1 ? matches[0] : commonPrefix(matches);
+    const head = input.slice(0, input.length - partial.length);
+    const completion = isCommandPosition ? shared : dirPrefix + shared;
+    setInput(head + completion + (matches.length === 1 && isCommandPosition ? ' ' : ''));
+
+    if (matches.length > 1) {
+      setLines(prev => [...prev, {
+        id: Math.random().toString(),
+        type: 'output',
+        content: matches.join('  ') + '\n',
+        time: new Date().toLocaleTimeString()
+      }]);
+    }
+  }, [input, cwd, userId]);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Tab accepts ghost prediction
-    if (e.key === 'Tab' && ghostPrediction) {
+    if (e.key === 'Tab') {
       e.preventDefault();
-      setInput(ghostPrediction);
-      setGhostPrediction('');
+      void completeInput();
+      return;
+    }
+
+    // ArrowUp from a fresh line stashes the draft so ArrowDown restores it
+    // rather than losing what was typed.
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (history.length === 0) return;
+      if (historyIndex === null) setDraft(input);
+      const next = historyIndex === null ? history.length - 1 : Math.max(0, historyIndex - 1);
+      setHistoryIndex(next);
+      setInput(history[next]);
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (historyIndex === null) return;
+      const next = historyIndex + 1;
+      if (next >= history.length) { setHistoryIndex(null); setInput(draft); return; }
+      setHistoryIndex(next);
+      setInput(history[next]);
       return;
     }
 
@@ -66,7 +132,9 @@ export const TerminalApp: React.FC = () => {
       const cmd = input.trim();
       if (!cmd) return;
 
-      setGhostPrediction('');
+      remember(cmd);
+      setHistoryIndex(null);
+      setDraft('');
 
       setLines(prev => [...prev, {
         id: Math.random().toString(),
@@ -170,18 +238,11 @@ export const TerminalApp: React.FC = () => {
           kernel.publish('vm.render', { _request_id: reqId, url, mode });
         }
       } else {
-        // Suspend standard execution and check the Speculative Execution shadow engine
-        setPendingCmd({ cmd: command, args, reqId });
+        // Straight to the sandbox. The speculative "shadow jail" this used
+        // to consult was cut along with the Go backend and always answered
+        // "miss", so it only ever added a round trip before every command.
         setRunning({ label: cmd, startedAt: Date.now() });
-        kernel.publish('terminal.check_shadow', { command: cmd });
-        if (kernel.isLive && (kernel as any).socket) {
-          (kernel as any).socket.send(JSON.stringify({
-            topic: 'terminal.check_shadow',
-            from: kernel.getClientId(),
-            payload: { command: cmd },
-            time: new Date().toISOString()
-          }));
-        }
+        kernel.publish('vm.spawn', { _request_id: reqId, cmd: command, args, cwd: 'home' });
       }
 
       setInput('');
@@ -220,14 +281,6 @@ export const TerminalApp: React.FC = () => {
         }
       }
 
-      // Ghost Command prediction received
-      if (env.topic === 'terminal.predict') {
-        const prediction = (env.payload as any).prediction;
-        if (prediction) {
-          setGhostPrediction(prediction);
-        }
-      }
-
       // Natural Language Shell translation received
       if (env.topic === 'sys.terminal.intent:ack') {
         const command = (env.payload as any).command;
@@ -252,41 +305,9 @@ export const TerminalApp: React.FC = () => {
         }
       }
 
-      // Shadow Engine Zero-Latency Hit
-      if (env.topic === 'terminal.shadow:hit') {
-        setPendingCmd(null);
-        const payload = env.payload as any;
-        setLines(prev => [...prev,
-        {
-          id: Math.random().toString(),
-          type: 'output',
-          content: `\x1b[35m[Kernos Pred-Exec] 0ms Latency Hit (Pre-computed in ${payload.exitMs}ms)\x1b[0m\n${payload.stdout || ''}`,
-          time: new Date().toLocaleTimeString()
-        },
-        ...(payload.stderr ? [{
-          id: Math.random().toString(),
-          type: 'error' as const,
-          content: payload.stderr,
-          time: new Date().toLocaleTimeString()
-        }] : [])
-        ]);
-      }
-
-      // Shadow Engine Miss - Proceed with normal execution
-      if (env.topic === 'terminal.shadow:miss') {
-        if (pendingCmd && pendingCmd.cmd === (env.payload as any).command.split(' ')[0]) {
-          kernel.publish('vm.spawn', {
-            _request_id: pendingCmd.reqId,
-            cmd: pendingCmd.cmd,
-            args: pendingCmd.args,
-            cwd: 'home'
-          });
-          setPendingCmd(null);
-        }
-      }
     });
     return unsubscribe;
-  }, [pendingCmd]);
+  }, []);
 
   // Drives the elapsed counter, and clears a spinner that never got its
   // vm.exit. The kernel emits vm.exit even on failure, so this only fires if
@@ -302,11 +323,6 @@ export const TerminalApp: React.FC = () => {
     }, 100);
     return () => clearInterval(timer);
   }, [running]);
-
-  // Compute the ghost text suffix to display after the cursor
-  const ghostSuffix = ghostPrediction && ghostPrediction.startsWith(input) 
-    ? ghostPrediction.slice(input.length) 
-    : ghostPrediction && input.length > 0 ? ` → ${ghostPrediction}` : '';
 
   return (
     <div
@@ -359,14 +375,6 @@ export const TerminalApp: React.FC = () => {
             autoFocus
             spellCheck={false}
           />
-          {/* Ghost prediction overlay */}
-          {ghostSuffix && (
-            <div className="absolute top-0 left-0 pointer-events-none whitespace-pre z-0">
-              <span className="invisible">{input}</span>
-              <span className="text-gray-600 italic">{ghostSuffix}</span>
-              <span className="text-gray-700 text-xs ml-2">[Tab]</span>
-            </div>
-          )}
         </div>
       </div>
       <div ref={bottomRef} />
