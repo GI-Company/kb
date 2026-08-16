@@ -3,32 +3,42 @@
 This document maps what's actually running today, and where each piece came from. The original Kernos OS was a Go microkernel behind a React shell; the original BNLM was a standalone static site. This app is the React shell, kept, retargeted at a stateless serverless backend, with BNLM's engine vendored in as a library the shell can drive.
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  BROWSER (the whole "OS")                                        │
-│  App.tsx / store.ts — window manager, taskbar, desktop           │
-│  ┌───────────┐ ┌──────────┐ ┌──────────────┐ ┌─────────────────┐ │
-│  │ AI Chat   │ │ Terminal │ │ Local Model  │ │ Editor / Files / │ │
-│  │           │ │          │ │ (BNLM)       │ │ CDE              │ │
-│  └─────┬─────┘ └────┬─────┘ └──────┬───────┘ └────────┬─────────┘ │
-│        │            │              │                  │           │
-│        └──────┬─────┴──────┬───────┘         lib/vfs.ts,          │
-│               │             │                 lib/chatStore.ts     │
-│      services/kernel.ts (client-side pub/sub bus + fetch adapter) │
-│               │             │                                      │
-│         lib/localModel.ts ──┼── src/bnlm/* (Tensor/BNLM/Adam/      │
-│         lib/modelRegistry.ts│   CharTokenizer/worker_pool, all     │
-│         (IndexedDB)         │   running in this tab, no network)   │
-└───────────────┼─────────────┼──────────────────────────────────────┘
-                 │             │
-                 ▼             ▼
-      POST /api/chat      POST /api/exec
-      (Vercel Edge Fn)    (Vercel Node Fn)
-                 │             │
-                 ▼             ▼
-         Groq Chat API    child_process, in a fresh
-     (llama-3.3-70b, or   /tmp jail per invocation,
-      whatever GROQ_MODEL  allowlisted + sanitized
-      is set to)
+┌────────────────────────────────────────────────────────────────────┐
+│  BROWSER (the whole "OS")                                          │
+│  App.tsx / store.ts — window manager, taskbar, desktop, mobile     │
+│  ┌──────────┐ ┌──────────┐ ┌────────────┐ ┌───────────────────┐    │
+│  │ AI Chat  │ │ Terminal │ │ Local Model│ │ Editor / Files /  │    │
+│  │ + Multi- │ │          │ │ (BNLM)     │ │ CDE / Monitors    │    │
+│  │  Agent   │ │          │ │            │ │                   │    │
+│  └────┬─────┘ └────┬─────┘ └─────┬──────┘ └─────────┬─────────┘    │
+│       │            │             │                  │              │
+│       └──────┬─────┴──────┬──────┘        lib/vfs.ts, chatStore.ts │
+│              │            │               lib/settings.ts (prefs)  │
+│     services/kernel.ts (client-side pub/sub bus + fetch adapter)   │
+│              │            │                                        │
+│    lib/localModel.ts ─────┼── src/bnlm/* (Tensor/BNLM/Adam/        │
+│    lib/modelRegistry.ts   │   CharTokenizer/worker_pool, all       │
+│    (IndexedDB)            │   running in this tab, no network)     │
+│                           │                                        │
+│    lib/appletCompiler.ts (Sucrase, in-browser TSX→JS)              │
+│      ├── DynamicApplet.tsx  (human-authored applets, shadow DOM)   │
+│      └── lib/kernosExec.ts  (agent-authored code, sandboxed)       │
+└──────────┬──────────┬──────────┬───────────────┬───────────────────┘
+           ▼          ▼          ▼               ▼
+    /api/chat   /api/exec  /api/browser-  /api/guest-usage
+    (Edge)      (Node)      render (Node)  (Node)
+           │          │          │               │
+           ▼          ▼          ▼               ▼
+      Groq Chat  child_process  puppeteer-core  Supabase
+      API, per-  in a fresh     + @sparticuz/   (guest quota,
+      persona    /tmp jail,     chromium        service-role)
+      routing    allowlisted    (signed-in
+                 + native       accounts only)
+                 curl/dig/ping
+
+           Supabase (Auth · Postgres · Storage · RLS)
+           ← lib/auth.ts, chatStore, vfs, modelStore
+             (real accounts; guests stay local-only)
 ```
 
 ## The bus: `services/kernel.ts`
@@ -37,20 +47,42 @@ The original Kernos frontend talked to the Go backend over a WebSocket, using a 
 
 | Topic | Old backend | Now |
 |---|---|---|
-| `agent.chat` | Go → LM Studio (streamed) | `/api/chat` → Groq (streamed) |
+| `agent.chat` | Go → LM Studio (streamed) | `/api/chat` → Groq (streamed), per-persona model routing |
+| `ai.chat` | Go → LM Studio | `/api/chat`, persona from `env.to`, echoes `_request_id` so concurrent callers can demultiplex |
 | `vm.spawn` | Go `exec.Cmd` in a temp jail | `/api/exec` → Node `child_process` in a fresh `/tmp` jail |
+| `vm.render` | — (new) | `/api/browser-render` → headless Chromium, signed-in accounts only |
 | `agent.roster` | Go query | answered locally from `lib/agents.ts` |
-| `chat.list/save/load/delete` | SQLite | `lib/chatStore.ts` (localStorage) |
-| `vfs:read/write/create` | Go host filesystem | not routed through the bus at all — apps call `lib/vfs.ts` directly |
+| `chat.list/save/load/delete` | SQLite | `lib/chatStore.ts` — Supabase for real accounts, localStorage for guests |
+| `vfs:read/write/create` | Go host filesystem | not routed through the bus at all — apps call `lib/vfs.ts` directly (Supabase or localStorage by account type) |
 | `terminal.check_shadow` | speculative-execution engine | always answers "miss" (no speculative engine — see Cuts) |
-| `applet.compile` | Go `esbuild` compiler | fails fast with a clear error (no compiler in this build) |
-| everything else (`bios.*`, `p2p.*`, `pkg.*`, ...) | Go handlers | broadcast locally only, no-op |
+| `applet.compile` | Go `esbuild` compiler | compiled in-browser by `lib/appletCompiler.ts` (Sucrase) |
+| `agent.tool:start/done/error` | — (new) | published by `apps/AIChat.tsx` so tool runs are observable on the bus |
+| everything else (`bios.*`, `p2p.*`, `pkg.*`, ...) | Go handlers | delivered to local subscribers only, no-op |
+
+Subscribers receive **outgoing** envelopes as well as responses. Anything with
+a handler above used to return before the catch-all broadcast, so `agent.chat`,
+`ai.chat`, `vm.spawn` and `task.run` appeared in `getTrafficLog()` but were
+never delivered live — which made "who asked for this?" underivable from the
+bus. `route()` now notifies subscribers first, then dispatches.
+
+User preferences do **not** ride the bus. The old `sys.config:get/set` topics
+had no backend and only echoed the request topic back, so the Settings panel
+they fed could never populate. Preferences now live in `lib/settings.ts`
+(localStorage, with a subscribe callback and cross-tab `storage` sync), and
+each one maps to a real effect: theme CSS variables, `reduceMotion`, terminal
+font size, default AI Chat persona, guest-quota warning threshold, boot
+sequence, and a PostHog opt-out.
 
 ## The agent layer: Groq
 
 `lib/agents.ts` holds the six personas (Dispatcher, Architect, Kernos Assistant, DevOps Engineer, Security Auditor, Code Review) as system prompts — previously six roles sharing two local LM Studio models, now six system prompts sharing one Groq-hosted model (`GROQ_MODEL` env var). `api/chat.ts` (Edge runtime) proxies to Groq's OpenAI-compatible `/chat/completions` endpoint with `stream: true`, re-emitting a simplified newline-delimited JSON stream so the client doesn't need to parse Groq's SSE format directly. `GROQ_API_KEY` never leaves this function.
 
-Dispatcher and Kernos Assistant additionally carry a **tool-call contract**: they can emit a fenced ` ```tool ` block (`{"tool":"bnlm.train",...}` / `{"tool":"bnlm.generate",...}`) that `AIChat.tsx` parses out of the reply and executes against `lib/localModel.ts` directly, reporting the result back into the same chat thread. This is the literal "Groq spins up and trains a browser-native model" loop.
+Dispatcher and Kernos Assistant additionally carry a **tool-call contract**: they can emit a fenced ` ```tool ` block that `AIChat.tsx` parses out of the reply, executes, and reports back into the same chat thread. Two tool families exist:
+
+- `bnlm.train` / `bnlm.generate` / `bnlm.score` — run against `lib/localModel.ts` directly. This is the literal "Groq spins up and trains a browser-native model" loop.
+- `kernos.exec` — runs agent-written TypeScript through `lib/kernosExec.ts`, the same Sucrase compile plus `AsyncFunction` sandbox that human-authored applets use, with a curated capability set (`vfs`, `bnlm`, `agent.ask`, a restricted `kernel` proxy), an 8s wall-clock timeout, and per-execution call budgets. `lib/kernosTools.ts` dispatches both families, and `lib/taskEngine.ts` can use either as a DAG node's command.
+
+The sandbox's honest limit: the timeout is a `Promise.race`, which catches slow *async* work but cannot preempt genuinely synchronous code (a real `while (true) {}`), because nothing here runs off-thread. A true hard-kill needs a Web Worker. The call budgets are the actual backstop against a runaway loop around real, billable calls.
 
 ## The local model: BNLM
 
@@ -73,10 +105,31 @@ This is the load-bearing difference from the original design. The Go backend was
 - Speculative/predictive command execution ("shadow jail" pre-computation)
 - Nightly RLHF consolidation / "Neuroplasticity Engine" goroutine pipelines
 - Self-healing parallel-DAG-mutation recovery
-- OAuth / multi-user accounts (single-user "guest" identity for v1)
-- Dynamic TSX→JS applet compilation (needed a server-side compiler)
 
-All of these assumed a persistent host process. A revival path exists for some of them (Supabase's free tier bundles Postgres + pgvector + Auth + Storage, which would cover accounts and vector memory in one integration rather than stitching together separate services), but none is built yet — see `App.tsx`'s `enterDesktop()` (a single constant "guest" identity, replacing the old login/signup screen) and `lib/chatStore.ts`/`lib/vfs.ts`'s localStorage backing, which exist specifically so those are one-file swaps later, not a rewrite. The concrete target schema for that migration — `profiles`/`conversations`/`messages`/`vfs_nodes`/`local_models`/`embeddings`, with RLS policies — is written out in [`supabase/schema.sql`](./supabase/schema.sql), ready to run whenever that migration actually happens; nothing reads or writes it yet.
+All of these assume a persistent host process, so none of them fits a stateless deployment.
+
+**Two items previously on this list have since shipped**, and are no longer cuts:
+
+- **Accounts.** Supabase Auth is wired up (`lib/auth.ts`), with the guest identity kept as a first-class fallback rather than removed — the app stays usable with no signup. `lib/chatStore.ts`, `lib/vfs.ts`, and `lib/modelStore.ts` each pick a backend from the user id's shape: guests get localStorage/IndexedDB, real accounts get Postgres + Storage. The schema in [`supabase/schema.sql`](./supabase/schema.sql) (`profiles`/`conversations`/`messages`/`vfs_nodes`/`local_models`, with RLS policies) is live, not aspirational. `embeddings` remains unused — it belongs to the still-cut GraphRAG work.
+- **Dynamic TSX→JS applet compilation.** This turned out not to need a server at all: `lib/appletCompiler.ts` runs Sucrase in the browser. Editor and CDE both have a "Launch Applet" button, and `components/apps/DynamicApplet.tsx` mounts the result in a closed shadow root behind a restricted kernel proxy.
+
+Guest usage is metered rather than unlimited: `api/guest-usage.ts` enforces a 15-min/day/IP quota, which fails open when `SUPABASE_SERVICE_ROLE_KEY` isn't configured.
+
+## The terminal: real network commands
+
+`api/exec.ts` runs allowlisted coreutils in a per-invocation `/tmp` jail, but `curl`, `dig`, and `ping` aren't shelled out to — the Vercel image doesn't ship them. They're reimplemented natively in `lib/networkCommands.ts` and gated to signed-in accounts (`lib/verifyAuth.ts` validates the Supabase access token the client attaches; guests silently keep the coreutils-only sandbox).
+
+Every outbound request goes through `lib/networkGuard.ts`, which blocks private, loopback, and link-local IPv4/IPv6 ranges and re-validates on each redirect hop. **Known gap:** there's no DNS-rebinding protection — a hostname that resolves to a public IP at check time and a private one at connect time would slip through. Closing that needs resolve-then-connect-by-IP, which `fetch` doesn't expose.
+
+`render <url>` is separate (`api/browser-render.ts`): a real headless Chromium page load via `puppeteer-core` + `@sparticuz/chromium`, returning extracted text or a screenshot. It needs its own `vercel.json` memory/duration budget and a paid plan — Hobby's hard 10s cap can't fit a Chromium cold start plus a page load.
+
+## Mobile
+
+Below `MOBILE_BREAKPOINT` (768px, in `store.ts`) the shell switches from overlapping draggable windows to full-screen single-app mode with a bottom nav and an app-switcher sheet. `isMobile` is kept on the store and synced by a module-level resize listener rather than read per-component, so every consumer — including `openWindow`'s sizing math — agrees within a single render. Drag and resize use Pointer Events, not Mouse Events, so touch and pen work at all.
+
+## Legal and funding
+
+`components/TermsGate.tsx` blocks the desktop for guests and signed-in users alike until accepted (`lib/terms.ts` records it). Governing law is Georgia, USA; contact is `g.intel.co@outlook.com`. `lib/donate.ts` renders a Buy Me a Coffee link when `VITE_DONATE_URL` is set and hides the button entirely when it isn't — no payment processing lives in this codebase.
 
 ## Rate limiting
 

@@ -1,6 +1,6 @@
 # Kernos + BNLM: Cloud Reasoning Paired with a Genuinely Local Model
 
-**Date of Publication:** March 2026 (original), updated for the Groq/Vercel/BNLM merge
+**Date of Publication:** March 2026 (original); last revised August 2026
 **Project Type:** Technical Architecture Proof-of-Concept
 
 ## Abstract
@@ -21,7 +21,9 @@ The UI still communicates via a typed `Envelope { topic, from, to?, payload, tim
 
 ### 2.2 Multi-Persona Routing Over a Single Model
 
-Rather than six agents each with independent reasoning capacity, this system routes six distinct system prompts (Dispatcher, Architect, Assistant, DevOps, Security, Code Review) through one Groq-hosted model. The differentiation is entirely in framing and instruction, not model capability — a deliberate simplification from a multi-model design, trading some behavioral diversity for zero local infrastructure and near-instant Groq inference latency.
+Six personas (Dispatcher, Architect, Assistant, DevOps, Security, Code Review) each pair a system prompt with a model selected for that role's job and call frequency, plus a fallback tried once on a rate-limit response. The selection criterion is not simply "most capable available": the triage persona fires on nearly every user action and is routed to the model with the largest daily request budget, while personas invoked less often but benefiting more from depth get the strongest one. This is a throughput-versus-capability allocation across a fixed rate-limit budget, not a quality ranking.
+
+(An earlier revision of this paper described all six as sharing a single model, which was accurate at the time; per-persona routing replaced it, and one environment variable still collapses it back to the single-model configuration.)
 
 ### 2.3 A Model That Is Actually Local
 
@@ -35,7 +37,9 @@ Two of the six personas carry an additional instruction: when the user's request
 
 ### 2.5 Persistence Without a Server
 
-Trained models, chat history, and the virtual filesystem all persist across reloads using browser storage — IndexedDB for model weights (binary, can exceed a comfortable localStorage budget even at these small demo sizes) and localStorage for everything else. No account system exists yet; a single "guest" identity is used, with the persistence layer already shaped (see Section 3) so a real backend can be swapped in without touching the UI.
+Persistence is dual-backend, discriminated by the shape of the current user id. Guests stay entirely local — IndexedDB for model weights (binary, and past a comfortable localStorage budget even at these small demo sizes), localStorage for chat history and the virtual filesystem — with no account and no data leaving the browser. Signed-in accounts (Supabase Auth) get the same data in Postgres and object storage, scoped by row-level security, so it follows them across devices. Each store (`lib/chatStore.ts`, `lib/vfs.ts`, `lib/modelStore.ts`) picks its backend internally, so no UI code knows which one is in play.
+
+This is worth stating precisely because the earlier revision of this paper described accounts as future work: they are built. What remains unbuilt is the vector-memory layer, which is a separate concern from identity.
 
 ## 3. Results and Limitations
 
@@ -44,7 +48,9 @@ The current implementation is a real, working system: Groq round-trips complete 
 Limitations, stated plainly:
 - **No persistent host process.** Several features from the original design genuinely require one — a real package manager that installs binaries, WebRTC P2P collaboration, a speculative command-execution cache, background RLHF consolidation — and are not present in this version. They are architecturally incompatible with a stateless deployment, not merely unimplemented.
 - **BNLM's scale is intentionally small.** This is a demonstration of the training loop being real, not a claim of competitive model quality — these are toy-sized models (tens to low hundreds of thousands of parameters) suited to memorizing small, simple corpora, comparable to what the TinyStories line of research uses to study what very small models can learn.
-- **Sandbox sophistication.** `api/exec.ts`'s command allowlist had to shrink further than the original Go version's, since Vercel's Node function runtime doesn't ship the broader toolset a real host would (no git/python/go/rust/ffmpeg by default).
+- **Sandbox sophistication.** `api/exec.ts`'s command allowlist had to shrink further than the original Go version's, since Vercel's Node function runtime doesn't ship the broader toolset a real host would (no git/python/go/rust/ffmpeg by default). Commands genuinely needed but absent — `curl`, `dig`, `ping` — were reimplemented natively rather than shelled out to.
+- **Untrusted-code execution is bounded, not hard-killed.** Agent-authored code runs in-process with curated globals, no real `eval`, and a wall-clock timeout. Because the runtime is single-threaded, that timeout cannot preempt genuinely synchronous code, and it does not stop already-dispatched async work from continuing to consume billable API budget after the caller has been handed an error. Per-execution call budgets bound the cost; a true hard-kill would require executing on a separate thread.
+- **Outbound request filtering has a known hole.** Private, loopback, and link-local ranges are blocked and re-checked per redirect hop, but a hostname resolving to a public address at validation time and a private one at connection time would not be caught. Closing it requires resolve-then-connect-by-IP, which the platform's fetch API does not expose.
 
 ## 4. Conclusion
 

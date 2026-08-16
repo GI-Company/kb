@@ -76,7 +76,7 @@ function compileSource(source: string, bindingName: string, requireDefaultExport
   }
 
   // Common hooks available bare (not just React.useState) — matches how
-  // this project's own example applets are written (see MyTestApplet.tsx).
+  // the starter applet template in apps/Editor.tsx is written.
   const preamble =
     'const { useState, useEffect, useRef, useCallback, useMemo, useContext, useReducer, useLayoutEffect } = React;\n';
 
