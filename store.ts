@@ -65,8 +65,42 @@ function readLiteModePref(): boolean {
 
 export const MOBILE_BREAKPOINT = 768;
 
-function computeIsMobile(): boolean {
-  return typeof window !== 'undefined' && window.innerWidth < MOBILE_BREAKPOINT;
+// A phone rotated to landscape is commonly WIDER than MOBILE_BREAKPOINT —
+// an iPhone 14 Pro is 926px, most Android phones land around 780-915px —
+// so a width-only check put those devices in desktop mode: hover-dependent
+// dropdown menus that never open on a touchscreen, drag-to-move windows
+// with no full-screen fallback, tiny click targets sized for a mouse.
+// Reported live as "I can't do anything... all I see is the time and
+// countdown timer" — that's the desktop taskbar's `justify-between` layout
+// with too little width for its own content, on a screen with no way to
+// trigger the things that would reveal more of it.
+//
+// The short edge (whichever of width/height is smaller) is what actually
+// tells a phone-in-landscape and a tablet apart, which raw width alone
+// cannot: a phone's short edge stays under ~430px in EITHER orientation,
+// while a tablet's short edge starts around 768px (iPad mini portrait) and
+// only gets larger from there. So mobile mode now triggers on width alone
+// (portrait phones, and narrowing a desktop browser window for testing)
+// OR on a touch-primary device whose short edge is phone-sized — which
+// catches phone landscape without also catching tablets, which keep the
+// existing floating/draggable desktop-style window mode on purpose (see
+// Window.tsx's Pointer Events handling, added for tablet drag/resize).
+const PHONE_SHORT_EDGE_MAX = 500;
+
+/** Exported for store.test.ts — the browser-preview tool ties touch
+ * emulation strictly to width < 768, so "landscape phone" (wide + touch)
+ * isn't reachable through it; this is tested directly instead. */
+export function computeIsMobile(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (window.innerWidth < MOBILE_BREAKPOINT) return true;
+  // maxTouchPoints only, not 'ontouchstart' in window — the latter is a
+  // known false-positive source, defined by some browsers regardless of
+  // whether real touch hardware is present. Caught by this file's own
+  // test: a stubbed non-touch, wide viewport still read as mobile until
+  // this fallback was removed.
+  const isTouchPrimary = navigator.maxTouchPoints > 0;
+  const shortEdge = Math.min(window.innerWidth, window.innerHeight);
+  return isTouchPrimary && shortEdge < PHONE_SHORT_EDGE_MAX;
 }
 
 export const useOS = create<OSStore>((set) => ({
@@ -229,6 +263,13 @@ export const useOS = create<OSStore>((set) => ({
 // useOS(s => s.isMobile) and re-renders like any other state change.
 if (typeof window !== 'undefined') {
   window.addEventListener('resize', () => {
+    useOS.getState().setIsMobile(computeIsMobile());
+  });
+  // Some mobile browsers have historically fired 'orientationchange'
+  // measurably before 'resize' settles to the rotated dimensions (or, on
+  // older WebViews, not fired a plain resize at all on rotation) — cheap
+  // to also listen directly rather than trust resize alone to cover it.
+  window.addEventListener('orientationchange', () => {
     useOS.getState().setIsMobile(computeIsMobile());
   });
 }
