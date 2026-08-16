@@ -6,11 +6,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 Element.prototype.scrollIntoView = vi.fn();
 
 // Mock kernel
+let subscriber: ((env: any) => void) | null = null;
 const mockPublish = vi.fn();
 // The implementation's parameter is declared even though it's unused: with
 // a bare `() => vi.fn()`, TypeScript infers a zero-argument call signature
 // and the `mockSubscribe(cb)` call below fails to type-check.
-const mockSubscribe = vi.fn((_cb: unknown) => vi.fn());
+const mockSubscribe = vi.fn((cb: any) => { subscriber = cb; return vi.fn(); });
 vi.mock('../services/kernel', () => ({
   kernel: {
     publish: (...args: any[]) => mockPublish(...args),
@@ -25,6 +26,7 @@ import { TerminalApp } from './Terminal';
 describe('TerminalApp', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    subscriber = null;
     vi.useFakeTimers();
   });
 
@@ -97,5 +99,76 @@ describe('TerminalApp', () => {
 
     // Welcome message should be gone
     expect(screen.queryByText(/Kernos OS/)).not.toBeInTheDocument();
+  });
+});
+
+// Progress feedback. `render` is a real headless-browser page load and can
+// take many seconds; with no indicator that is indistinguishable from a hang.
+describe('TerminalApp running indicator', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    subscriber = null;
+    vi.useFakeTimers();
+  });
+  afterEach(() => { vi.useRealTimers(); });
+
+  const run = (command: string) => {
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: command } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+  };
+
+  it('shows the command while it is in flight', () => {
+    render(<TerminalApp />);
+    run('ls -la');
+    expect(screen.getByText(/running/)).toBeInTheDocument();
+    // Appears twice on purpose — once as the echoed prompt line, once named
+    // inside the indicator so it's clear WHAT is still running.
+    expect(screen.getAllByText('ls -la').length).toBeGreaterThan(1);
+  });
+
+  it('counts elapsed time up', () => {
+    render(<TerminalApp />);
+    run('ls -la');
+    act(() => { vi.advanceTimersByTime(1500); });
+    expect(screen.getByText(/1\.\d+s/)).toBeInTheDocument();
+  });
+
+  // vm.exit is emitted on success AND failure, which is why it's the signal
+  // used to stop the indicator — an error path must not leave it spinning.
+  it('clears on vm.exit', () => {
+    render(<TerminalApp />);
+    run('ls -la');
+    expect(screen.queryByText(/running/)).toBeInTheDocument();
+
+    act(() => {
+      subscriber?.({ topic: 'vm.exit', payload: { code: 0 }, from: 'kernel', time: new Date().toISOString() });
+    });
+    expect(screen.queryByText(/running/)).not.toBeInTheDocument();
+  });
+
+  it('clears even when the command failed', () => {
+    render(<TerminalApp />);
+    run('ls -la');
+    act(() => {
+      subscriber?.({ topic: 'vm.exit', payload: { code: 1 }, from: 'kernel', time: new Date().toISOString() });
+    });
+    expect(screen.queryByText(/running/)).not.toBeInTheDocument();
+  });
+
+  it('shows the headless-browser hint only for a slow render', () => {
+    render(<TerminalApp />);
+    run('render https://example.com');
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(screen.queryByText(/headless browser/)).not.toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(3000); });
+    expect(screen.getByText(/headless browser/)).toBeInTheDocument();
+  });
+
+  it('gives up on a spinner that never got its vm.exit', () => {
+    render(<TerminalApp />);
+    run('ls -la');
+    act(() => { vi.advanceTimersByTime(121_000); });
+    expect(screen.queryByText(/running/)).not.toBeInTheDocument();
   });
 });

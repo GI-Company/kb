@@ -66,7 +66,7 @@ Two things originally cut have since shipped and are no longer missing: **accoun
 
 Note the `VITE_` prefix is **required and exact** for anything the browser reads — this is a Vite app, not Next.js, so `NEXT_PUBLIC_*` names are silently ignored with no build or runtime error.
 
-The `render` terminal command needs a paid Vercel plan: Hobby's hard 10-second function limit can't fit a Chromium cold start plus a page load.
+The `render` terminal command needs enough function budget for a Chromium cold start plus a page load — fine on Fluid compute / Active CPU billing, too tight on Hobby's hard 10-second limit.
 
 ## Project layout
 

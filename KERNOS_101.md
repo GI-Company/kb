@@ -117,7 +117,7 @@ render https://example.com              # headless Chromium, extracted text
 render https://example.com --screenshot # ...or a PNG, inline in the terminal
 ```
 
-`render` needs a paid Vercel plan — a Chromium cold start plus a page load doesn't fit in Hobby's 10-second function limit.
+`render` needs enough function budget for a Chromium cold start plus a page load: fine on Fluid compute / Active CPU billing, too tight on Hobby's hard 10-second limit.
 
 ---
 

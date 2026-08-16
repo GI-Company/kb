@@ -17,6 +17,11 @@ export const TerminalApp: React.FC = () => {
   const [input, setInput] = useState('');
   const [ghostPrediction, setGhostPrediction] = useState('');
   const [pendingCmd, setPendingCmd] = useState<{ cmd: string, args: string[], reqId: string } | null>(null);
+  // What's currently in flight, so the prompt can show progress instead of
+  // going silent. `render` in particular is a real headless-browser page
+  // load and can take many seconds — with no feedback that reads as a hang.
+  const [running, setRunning] = useState<{ label: string; startedAt: number } | null>(null);
+  const [elapsedMs, setElapsedMs] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -97,11 +102,13 @@ export const TerminalApp: React.FC = () => {
             time: new Date().toLocaleTimeString()
           }]);
         } else {
+          setRunning({ label: cmd, startedAt: Date.now() });
           kernel.publish('vm.render', { _request_id: reqId, url, mode });
         }
       } else {
         // Suspend standard execution and check the Speculative Execution shadow engine
         setPendingCmd({ cmd: command, args, reqId });
+        setRunning({ label: cmd, startedAt: Date.now() });
         kernel.publish('terminal.check_shadow', { command: cmd });
         if (kernel.isLive && (kernel as any).socket) {
           (kernel as any).socket.send(JSON.stringify({
@@ -127,6 +134,12 @@ export const TerminalApp: React.FC = () => {
           content: env.payload.text,
           time: new Date().toLocaleTimeString()
         }]);
+      }
+
+      // Every command path ends in vm.exit, success or failure, which makes
+      // it the one reliable place to stop the progress indicator.
+      if (env.topic === 'vm.exit') {
+        setRunning(null);
       }
 
       // `render <url> --screenshot` result — displayed as an image, not text.
@@ -165,6 +178,7 @@ export const TerminalApp: React.FC = () => {
           // Auto-execute the translated command
           const [cmd, ...args] = command.split(' ');
           const reqId = Math.random().toString(36).substring(7);
+          setRunning({ label: command, startedAt: Date.now() });
           kernel.publish('vm.spawn', {
             _request_id: reqId,
             cmd,
@@ -210,6 +224,21 @@ export const TerminalApp: React.FC = () => {
     return unsubscribe;
   }, [pendingCmd]);
 
+  // Drives the elapsed counter, and clears a spinner that never got its
+  // vm.exit. The kernel emits vm.exit even on failure, so this only fires if
+  // something is genuinely wrong — better a stale indicator disappears than
+  // spins forever.
+  useEffect(() => {
+    if (!running) { setElapsedMs(0); return; }
+    const started = running.startedAt;
+    const timer = setInterval(() => {
+      const ms = Date.now() - started;
+      setElapsedMs(ms);
+      if (ms > 120_000) setRunning(null);
+    }, 100);
+    return () => clearInterval(timer);
+  }, [running]);
+
   // Compute the ghost text suffix to display after the cursor
   const ghostSuffix = ghostPrediction && ghostPrediction.startsWith(input) 
     ? ghostPrediction.slice(input.length) 
@@ -237,6 +266,21 @@ export const TerminalApp: React.FC = () => {
           )}
         </div>
       ))}
+      {running && (
+        <div className="flex items-center gap-2 mt-2 text-cyan-400/80" aria-live="polite">
+          <span className="inline-block w-3 animate-pulse">▊</span>
+          <span className="truncate">running <span className="text-white">{running.label}</span></span>
+          <span className="text-gray-500 tabular-nums">{(elapsedMs / 1000).toFixed(1)}s</span>
+          {/* Chromium cold start dominates the first render; saying so beats
+              leaving someone wondering whether it has hung. */}
+          {running.label.startsWith('render') && elapsedMs > 3000 && (
+            <span className="text-gray-600 text-xs">headless browser — first run is slower</span>
+          )}
+          {elapsedMs > 30000 && (
+            <span className="text-amber-500/70 text-xs">still going…</span>
+          )}
+        </div>
+      )}
       <div className="flex items-center mt-2 relative">
         <span className="text-cyan-500 mr-2">➜ ~</span>
         <div className="relative flex-1">
