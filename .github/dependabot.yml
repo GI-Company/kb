@@ -18,6 +18,17 @@ updates:
           - patch
     labels:
       - dependencies
+    ignore:
+      # TypeScript 7 is the native (Go) rewrite, and its programmatic API
+      # differs from 5.x. Vercel's build pipeline loads the project's LOCAL
+      # TypeScript for its own post-build step, so a 7.x bump fails the
+      # deploy with "Cannot read properties of undefined (reading
+      # 'readFile')" — after Vite has already built successfully, since Vite
+      # transpiles with esbuild rather than tsc. Nothing in this repo is
+      # wrong; the constraint is external. Revisit when Vercel supports it.
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
 
   # The workflow below pins actions by major version; this keeps those from
   # silently rotting.

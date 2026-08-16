@@ -146,7 +146,11 @@ missed too.
 
 Dependabot (`.github/dependabot.yml`) opens weekly npm PRs with minor and
 patch bumps grouped into one, majors kept separate because those are the
-ones needing review.
+ones needing review — a policy that earned itself immediately: the first
+major it proposed (TypeScript 7) broke the Vercel deploy, because Vercel
+loads the project's local TypeScript and 7.x changed that API. TypeScript
+majors are now pinned out until Vercel supports them; nothing else is
+blanket-ignored.
 
 Current state: **0 known vulnerabilities**.
 
