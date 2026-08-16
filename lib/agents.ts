@@ -114,6 +114,23 @@ Only emit a kernos.exec block when the task genuinely needs it — a single
 bnlm.* tool call or a normal reply is simpler and preferred when either
 covers what's needed.`;
 
+// Appended to every persona that can take an action on the user's behalf.
+// The point is that a decision the user can't inspect is a decision they
+// can't correct — so the reasoning is part of the output, not a debug
+// affordance. apps/AIChat.tsx already parses <think>/<reasoning> blocks out
+// of replies (lib/thinking.ts) and renders them in a collapsible panel, so
+// this shows up as "Why?" rather than as clutter in the answer.
+const GLASS_BOX_CONTRACT = `
+BE INSPECTABLE:
+- Before a tool call or a consequential answer, write a short
+  <reasoning>...</reasoning> block saying why you chose it. Two to five
+  sentences. It is shown to the user collapsed, so it costs them nothing.
+- When you act on a local classifier's output, quote its confidence and its
+  runner-up. Never present a routing decision as certain when it wasn't.
+- If confidence is below 0.6, say so plainly and either ask a clarifying
+  question or handle it yourself instead of trusting the label.
+- Never claim a tool succeeded without having seen its result.`;
+
 export const DEFAULT_AGENTS: AgentPersona[] = [
   {
     id: 'agent-dispatcher',
@@ -133,7 +150,8 @@ Example: "Sure, computing that now.\n\`\`\`tool\n{\"tool\":\"kernos.exec\",\"arg
 
 Be fast and concise in either mode.
 ${BNLM_TOOL_CONTRACT}
-${KERNOS_EXEC_TOOL_CONTRACT}`,
+${KERNOS_EXEC_TOOL_CONTRACT}
+${GLASS_BOX_CONTRACT}`,
   },
   {
     id: 'agent-architect',
@@ -162,7 +180,8 @@ If the user asks a question about code, the OS, or general knowledge, answer the
 Provide code snippets naturally and explain your thought process.
 Be concise but extremely capable.
 ${BNLM_TOOL_CONTRACT}
-${KERNOS_EXEC_TOOL_CONTRACT}`,
+${KERNOS_EXEC_TOOL_CONTRACT}
+${GLASS_BOX_CONTRACT}`,
   },
   {
     id: 'agent-devops',

@@ -121,10 +121,16 @@ export class BNLMClassifier {
 
   /**
    * Inference for a single sequence. Returns the full probability
-   * distribution, not just the argmax — a caller routing on this needs the
-   * confidence to decide whether to act or fall back to a bigger model.
+   * distribution and the raw logits, not just the argmax — a caller routing
+   * on this needs the confidence to decide whether to act or defer to a
+   * bigger model, and the logits to see how close the runner-up was.
+   *
+   * Deliberately cheap: one forward pass. Attribution costs one pass per
+   * token, so it lives in attributeByOcclusion() rather than being charged
+   * to every routing decision.
+   *
    * @param {Int32Array|number[]} ids
-   * @returns {Promise<{label:number, confidence:number, probs:number[]}>}
+   * @returns {Promise<{label:number, confidence:number, probs:number[], logits:number[], pooledNorm:number}>}
    */
   async predict(ids) {
     const truncated = ids.length > this.contextLen ? ids.slice(-this.contextLen) : ids;
@@ -132,17 +138,68 @@ export class BNLMClassifier {
     const idsFlat = new Int32Array(T);
     idsFlat.set(truncated.length ? truncated : [0]);
 
-    const logits = await this.forwardLogits(idsFlat, 1, T, [T]);
+    // encode() rather than forwardLogits() so the pooled vector is available
+    // for the norm below without a second pass.
+    const hidden = await this.trunk.encode(idsFlat, 1, T);
+    const pooled = embeddingLookup(hidden, new Int32Array([T - 1]));
+    const logitsTensor = addBias(await matmul(pooled, this.Wcls, false, true), this.bcls);
 
-    const row = Array.from(logits.data.subarray(0, this.numClasses));
-    const max = Math.max(...row);
-    const exps = row.map(v => Math.exp(v - max));
+    const logits = Array.from(logitsTensor.data.subarray(0, this.numClasses));
+    const max = Math.max(...logits);
+    const exps = logits.map(v => Math.exp(v - max));
     const sum = exps.reduce((a, b) => a + b, 0);
     const probs = exps.map(e => e / sum);
 
     let label = 0;
     for (let c = 1; c < probs.length; c++) if (probs[c] > probs[label]) label = c;
-    return { label, confidence: probs[label], probs };
+
+    let pooledNorm = 0;
+    for (let d = 0; d < this.dModel; d++) pooledNorm += pooled.data[d] * pooled.data[d];
+    pooledNorm = Math.sqrt(pooledNorm);
+
+    return { label, confidence: probs[label], probs, logits, pooledNorm };
+  }
+
+  /**
+   * Causal attribution by occlusion: drop each token in turn, re-run, and
+   * measure how far the target class's probability falls. A positive score
+   * means that token was holding the prediction up; a negative score means
+   * it was arguing against it.
+   *
+   * Why occlusion and not a similarity score against the pooled vector: the
+   * pooled vector IS the last token's hidden state under last-token pooling,
+   * so comparing positions to it would score the final token 1.0 by
+   * construction and tell you nothing about what actually drove the
+   * decision. Occlusion measures a real counterfactual — remove this
+   * evidence, does the answer change? — which is what "why" means here.
+   *
+   * Cost is one forward pass per token. That is only affordable because
+   * these models are tiny (single-digit thousands of parameters); it would
+   * be untenable at any serious scale, which is part of the argument for
+   * keeping the specialists small.
+   *
+   * @param {Int32Array|number[]} ids
+   * @param {number} [targetClass] defaults to the model's own prediction
+   * @returns {Promise<{targetClass:number, baseline:number, contributions:{index:number, score:number}[]}>}
+   */
+  async attributeByOcclusion(ids, targetClass) {
+    const truncated = ids.length > this.contextLen ? Array.from(ids).slice(-this.contextLen) : Array.from(ids);
+    const base = await this.predict(truncated);
+    const target = targetClass ?? base.label;
+    const baseline = base.probs[target];
+
+    // A single token can't be occluded — there'd be nothing left to classify.
+    if (truncated.length < 2) {
+      return { targetClass: target, baseline, contributions: [] };
+    }
+
+    const contributions = [];
+    for (let i = 0; i < truncated.length; i++) {
+      const without = truncated.slice(0, i).concat(truncated.slice(i + 1));
+      const { probs } = await this.predict(without);
+      contributions.push({ index: i, score: baseline - probs[target] });
+    }
+    return { targetClass: target, baseline, contributions };
   }
 }
 
