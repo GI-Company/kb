@@ -6,6 +6,7 @@
 
 import { localModel } from './localModel';
 import { localClassifier, LabeledExample } from './localClassifier';
+import { generateLabeledExamples, describeDataset } from './datasetGen';
 
 export interface ToolCall {
   tool: string;
@@ -95,6 +96,35 @@ export async function runLocalModelTool(toolCall: ToolCall): Promise<ToolRunResu
   // classifier rather than being coaxed out of generated text: the output
   // is a distribution over known labels, so it can't be malformed and it
   // comes with a confidence the caller can act on.
+
+  // Generates its own training data, then trains on it — the whole point
+  // being that Groq is used once here and never again at inference.
+  if (toolCall.tool === 'bnlm.buildClassifier') {
+    const { labels, domain, perLabel = 60, steps = 250 } = toolCall.args || {};
+    if (!Array.isArray(labels) || labels.length < 2) {
+      throw new Error('bnlm.buildClassifier needs a "labels" array with at least 2 labels.');
+    }
+    if (!domain || typeof domain !== 'string') {
+      throw new Error('bnlm.buildClassifier needs a "domain" describing what is being classified.');
+    }
+    const clampedPer = Math.min(Math.max(Math.round(Number(perLabel) || 60), 10), 150);
+    const examples = await generateLabeledExamples(labels.map(String), clampedPer, domain);
+    const stats = describeDataset(examples);
+
+    const init = localClassifier.init(examples);
+    const result = await localClassifier.train(
+      Math.min(Math.max(Math.round(Number(steps) || 250), 1), 600)
+    );
+
+    const warn = stats.warnings.length ? `\n\nData quality: ${stats.warnings.join(' ')}` : '';
+    return { text:
+      `Generated ${stats.total} examples across ${init.labels.length} labels ` +
+      `(${Object.entries(stats.perLabel).map(([l, n]) => `${l}: ${n}`).join(', ')}) and trained a ` +
+      `${init.paramCount.toLocaleString()}-param classifier. Final loss ` +
+      `${result.finalLoss.toFixed(3)}, training accuracy ${(result.trainAccuracy * 100).toFixed(1)}% ` +
+      `(training accuracy is not generalization).${warn}`
+    };
+  }
 
   if (toolCall.tool === 'bnlm.trainClassifier') {
     const { examples, steps = 250 } = toolCall.args || {};

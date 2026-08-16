@@ -98,7 +98,15 @@ then
 It needs at least 2 distinct labels, and wants a few hundred varied
 examples — a couple dozen will memorize and fail on anything new. The
 result includes the full ranked distribution and a per-word explanation of
-what drove the answer, which is shown to the user.`;
+what drove the answer, which is shown to the user.
+
+If you don't already have examples, generate them and train in one step —
+this is the usual path, and it means you write the data once and the
+classifier then runs with no further model calls:
+
+\`\`\`tool
+{"tool":"bnlm.buildClassifier","args":{"labels":["files","network","model"],"domain":"short commands a user types into a desktop OS","perLabel":60}}
+\`\`\``;
 
 // Appended alongside BNLM_TOOL_CONTRACT — a general escape hatch for
 // anything that isn't a single bnlm.* call: multi-step logic, combining
