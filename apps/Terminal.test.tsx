@@ -7,7 +7,10 @@ Element.prototype.scrollIntoView = vi.fn();
 
 // Mock kernel
 const mockPublish = vi.fn();
-const mockSubscribe = vi.fn(() => vi.fn());
+// The implementation's parameter is declared even though it's unused: with
+// a bare `() => vi.fn()`, TypeScript infers a zero-argument call signature
+// and the `mockSubscribe(cb)` call below fails to type-check.
+const mockSubscribe = vi.fn((_cb: unknown) => vi.fn());
 vi.mock('../services/kernel', () => ({
   kernel: {
     publish: (...args: any[]) => mockPublish(...args),

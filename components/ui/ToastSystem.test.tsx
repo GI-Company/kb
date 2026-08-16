@@ -21,9 +21,12 @@ describe('ToastSystem', () => {
     subscriberCallback = null;
   });
 
-  it('renders nothing when there are no toasts', () => {
+  it('renders no toasts before anything is published', () => {
     const { container } = render(<ToastSystem />);
-    expect(container.innerHTML).toBe('');
+    // The positioning wrapper is always mounted (it's fixed and
+    // pointer-events-none, so an empty one is inert); what matters is that
+    // it holds no toasts.
+    expect(container.querySelector('.pointer-events-auto')).toBeNull();
   });
 
   it('renders a toast for sys.kernel_panic', () => {
@@ -38,7 +41,7 @@ describe('ToastSystem', () => {
       });
     });
 
-    expect(screen.getByText('Kernel Panic Intercepted')).toBeInTheDocument();
+    expect(screen.getByText('Kernel Panic')).toBeInTheDocument();
     expect(screen.getByText(/VFS: Disk corruption detected/)).toBeInTheDocument();
   });
 
