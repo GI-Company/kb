@@ -108,6 +108,15 @@ denying camera/mic/geolocation/payment/USB, and a CSP.
 > `frame-ancestors 'none'`, and `connect-src` limited to Supabase and
 > PostHog.
 
+Verified against the live deployment rather than reasoned about: the header
+is served, the `Function` constructor and blob workers both still work
+(they are what the applet compiler and exec sandbox depend on), and the app
+boots. The first live check did catch one thing — PostHog lazily loads
+feature scripts from `us-assets.i.posthog.com`, which `connect-src` allowed
+but `script-src` did not, so session recording and surveys were blocked
+while core analytics kept working. Fixed by allowing the PostHog origins in
+`script-src` too.
+
 ## Abuse and cost controls
 
 | Control | Status |
