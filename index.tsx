@@ -17,3 +17,14 @@ root.render(
     <App />
   </React.StrictMode>
 );
+
+// Registered after load so it never competes with the initial render for
+// bandwidth/main-thread time — see public/sw.js for exactly what it caches
+// and why it never touches /api/* or cross-origin requests.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((err) => {
+      console.warn('Service worker registration failed:', err);
+    });
+  });
+}

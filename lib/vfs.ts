@@ -90,7 +90,7 @@ const localBackend = {
     return true;
   },
 
-  async create(parentId: string, name: string, type: 'file' | 'directory', content = ''): Promise<FileNode> {
+  async create(parentId: string, name: string, type: 'file' | 'directory', content = '', mountSource?: string): Promise<FileNode> {
     const state = readLocalState();
     const parent = state.nodes[parentId] || state.nodes[ROOT_SENTINEL];
     const id = genId();
@@ -101,6 +101,7 @@ const localBackend = {
       content: type === 'file' ? content : undefined,
       children: type === 'directory' ? [] : undefined,
       parentId: parent.id,
+      mountSource,
     };
     state.nodes[id] = node;
     parent.children = [...(parent.children || []), id];
@@ -193,10 +194,10 @@ const supabaseBackend = {
     return !error;
   },
 
-  async create(parentId: string, name: string, type: 'file' | 'directory', userId: string, content = ''): Promise<FileNode> {
+  async create(parentId: string, name: string, type: 'file' | 'directory', userId: string, content = '', mountSource?: string): Promise<FileNode> {
     const { data, error } = await supabase!
       .from('vfs_nodes')
-      .insert({ user_id: userId, parent_id: toParentId(parentId), name, type, content: type === 'file' ? content : null })
+      .insert({ user_id: userId, parent_id: toParentId(parentId), name, type, content: type === 'file' ? content : null, mount_source: mountSource ?? null })
       .select('id,name,type,mount_source')
       .single();
     if (error) throw error;
@@ -241,6 +242,38 @@ const supabaseBackend = {
   },
 };
 
+// ── File System Access mounts (desktop, optional, session-only) ──────────
+// A "mount" (apps/FileSystem.tsx's "Mount folder" button, behind a
+// showDirectoryPicker feature-detect) imports a real on-disk directory's
+// files into the VFS once, tagged via mountSource, then registers the
+// browser's live FileSystemFileHandle here so a later vfs.write() to one of
+// those files also writes through to the real file on disk — from the
+// Editor, from CDE, or from the terminal's `write`, since they all funnel
+// through this one vfs.write(). Deliberately not persisted across reloads:
+// FileSystemFileHandle isn't structured-cloneable into IndexedDB without
+// the (still Chromium-only) storeable-handle permission dance, so a reload
+// just leaves a plain imported copy behind — re-mounting is a re-pick, not
+// a repair, and that's an intentional scope line, not an oversight.
+const mountHandles = new Map<string, FileSystemFileHandle>();
+
+export function registerMountHandle(fileId: string, handle: FileSystemFileHandle): void {
+  mountHandles.set(fileId, handle);
+}
+
+async function writeThroughIfMounted(id: string, content: string): Promise<void> {
+  const handle = mountHandles.get(id);
+  if (!handle) return;
+  try {
+    const writable = await handle.createWritable();
+    await writable.write(content);
+    await writable.close();
+  } catch {
+    // Permission revoked, file moved/deleted on disk, etc. — the VFS copy
+    // above already saved fine; the mount just stops tracking this file.
+    mountHandles.delete(id);
+  }
+}
+
 export const vfs = {
   list(parentId: string, userId: string): Promise<FileNode[]> {
     return (isGuestId(userId) ? localBackend.list(parentId) : supabaseBackend.list(parentId, userId));
@@ -248,11 +281,13 @@ export const vfs = {
   read(id: string, userId: string): Promise<string> {
     return (isGuestId(userId) ? localBackend.read(id) : supabaseBackend.read(id, userId));
   },
-  write(id: string, content: string, userId: string): Promise<boolean> {
-    return (isGuestId(userId) ? localBackend.write(id, content) : supabaseBackend.write(id, content, userId));
+  async write(id: string, content: string, userId: string): Promise<boolean> {
+    const wrote = await (isGuestId(userId) ? localBackend.write(id, content) : supabaseBackend.write(id, content, userId));
+    if (wrote) await writeThroughIfMounted(id, content);
+    return wrote;
   },
-  create(parentId: string, name: string, type: 'file' | 'directory', userId: string, content = ''): Promise<FileNode> {
-    return (isGuestId(userId) ? localBackend.create(parentId, name, type, content) : supabaseBackend.create(parentId, name, type, userId, content));
+  create(parentId: string, name: string, type: 'file' | 'directory', userId: string, content = '', mountSource?: string): Promise<FileNode> {
+    return (isGuestId(userId) ? localBackend.create(parentId, name, type, content, mountSource) : supabaseBackend.create(parentId, name, type, userId, content, mountSource));
   },
   rename(id: string, newName: string, userId: string): Promise<boolean> {
     return (isGuestId(userId) ? localBackend.rename(id, newName) : supabaseBackend.rename(id, newName, userId));

@@ -34,11 +34,14 @@ map, not the territory.
 | Security | Exec worker + `terminate()` for real preemption; guest quota; sandboxed-exec allowlist trimmed to the 27 commands actually probed present on the deployed runtime (was 39, 12 dead) |
 | Mobile | Phone detection is orientation-aware (touch + short viewport edge, not raw width alone — a phone in landscape is often wider than the old breakpoint); all four full-viewport containers use `dvh`/`dvw`, not static `vh`/`vw`, so the taskbar can't render below the fold on a real device with expanded browser chrome |
 | Boot / BIOS | Boot-time BIOS (right-click during boot) is now read-only diagnostics sourced from the same modules the terminal reads — capability table, saved local models, and the live `/api/exec` allowlist — not a config editor for `bios.*` kernel topics that have had no backend since the Go microkernel was retired |
+| PWA | Installable (manifest + maskable/any icon set); a same-origin-only service worker caches the shell and static assets — network-first for navigations, cache-first for content-hashed `/assets/*`, stale-while-revalidate for stable-named files (manifest, icons) — and never touches `/api/*` or cross-origin requests. Verified live that this doesn't break cross-origin isolation: `self.crossOriginIsolated` and `SharedArrayBuffer` both still hold with the worker active and controlling the page, on first load and on reload |
+| Mobile import/export | `FileSystem.tsx` gets an Import button (`<input type=file>` → read as text → `vfs.create`) and a Share button (`navigator.share`, with a file-share capability check, a text-only fallback, and an honest "unavailable" toast where Web Share doesn't exist at all — verified live, this environment's desktop Chromium build is exactly that case) |
+| Desktop mount (optional) | A "Mount folder" button, behind a `showDirectoryPicker` feature-detect, recursively imports a real directory's files into the VFS tagged with `mountSource`, and holds the live `FileSystemFileHandle`s in memory so a `vfs.write()` from anywhere (Editor, CDE, terminal `write`) writes through to disk for the rest of the session. Deliberately session-only, not persisted across reload — the handle isn't stored, so a reload leaves a plain imported copy, not a broken mount |
 | Explicitly rejected | Trunk-as-retriever (`embed`/`similar`/`match`/`index`) — measured, not guessed: held-out precision@1 landed at or below chance (`lib/embedPrecision.test.ts`). `pip install` — off behind one documented flag (`PACKAGE_INSTALL_ENABLED` in `lib/pythonRuntime.ts`) pending an explicit CSP/`connect-src` decision, not a technical blocker |
 
 Durable storage today: `lib/vfs.ts` (IndexedDB for guests, Supabase for
-signed-in accounts) — not OPFS-primary. No PWA manifest or service worker
-exist yet; that's Phase 5, untouched, honestly.
+signed-in accounts) — not OPFS-primary, and Phase 5 deliberately didn't
+change that (see below).
 
 ## 2. Design principles
 
@@ -86,13 +89,29 @@ real IndexedDB persistence, not a mock.
   fallback or a `correct` prompt, rather than trusting a narrow-margin call
   silently. Not commissioned as part of Phase 4's metric-honesty scope.
 
-**Phase 5 — PWA, egress, storage depth.** Entirely unstarted, confirmed by
-absence rather than assumed: no manifest, no service worker, no OPFS
-anywhere in the tree. Web app manifest + offline-safe service worker for
-shell/assets; mobile file-picker import and Web Share export; an optional
-File System Access mount on desktop where supported; only then consider
-OPFS as the primary volume with `SyncAccessHandle` in the Python worker,
-and only if profiling shows `postMessage` cost actually matters.
+**Phase 5 — PWA, mobile I/O, optional desktop mount.** Closed, verified
+live. The one real risk going in was that a service worker could silently
+break cross-origin isolation (COOP/COEP, required for BNLM's
+`SharedArrayBuffer` parallel training) by handing back a response without
+those headers — mitigated by never constructing a `Response` by hand in
+`public/sw.js`: every path either returns a real `fetch()` result or a
+cached copy of exactly that, and navigations are network-first specifically
+so the live, correctly-headered response is preferred over anything cached.
+Confirmed on a real reload with the worker active and controlling the page:
+`self.crossOriginIsolated` and `SharedArrayBuffer` both still true. Mobile
+import (`<input type=file>` → VFS) and Web Share export (with a graceful
+"unavailable" fallback, itself exercised live since this environment's
+desktop Chromium has no Web Share) round out the mobile side. The optional
+desktop mount (File System Access, feature-detected) recursively imports a
+picked directory and keeps live handles in memory for the session so writes
+go through to disk — intentionally not persisted across reload, since
+storing a `FileSystemFileHandle` needs the still-Chromium-only storeable-
+handle permission dance, which is out of scope here.
+
+OPFS as the primary volume (`SyncAccessHandle` in the Python worker)
+remains deliberately untouched — it was never more than a "consider it
+later, and only if profiling shows `postMessage` cost actually matters"
+item, not committed work, and nothing in this pass changed that.
 
 **Wedge (parallel, not sequential).** "Train a private intent router in
 the browser; run it offline; inspect why; teach its mistakes." The 2-minute
@@ -145,7 +164,7 @@ scheduled:
 - [x] Local classify/explain/correct loop stable, and *measured* — including
       the negative result on retrieval
 - [x] Retrain metrics honest (frozen held-out split, taught-item accuracy)
-- [ ] PWA installable; mobile import/export works
+- [x] PWA installable; mobile import/export works
 - [ ] Docs match code (this table is true — checked 2026‑08‑17)
 - [ ] One clear wedge demo recorded, not just runnable
 
