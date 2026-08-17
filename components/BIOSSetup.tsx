@@ -94,7 +94,7 @@ export const BIOSSetup: React.FC<BIOSSetupProps> = ({ onExit }) => {
   const CAPABILITY_ORDER: Capability[] = ['vfs', 'vfs:write', 'model:local', 'model:cloud', 'python', 'net', 'exec'];
 
   return (
-    <div className="h-screen w-screen bg-[#000810] text-white font-mono flex flex-col select-none overflow-hidden">
+    <div className="h-[100dvh] w-[100dvw] bg-[#000810] text-white font-mono flex flex-col select-none overflow-hidden">
       {/* Header */}
       <div className="h-12 bg-[#001020] border-b border-cyan-900/30 flex items-center px-6 gap-4 shrink-0">
         <div className="flex items-center gap-2">

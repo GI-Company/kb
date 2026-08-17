@@ -43,7 +43,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin, onGuestAccess
   };
 
   return (
-    <div className="h-screen w-screen bg-gradient-to-br from-[#0a0a1a] via-[#0d1025] to-[#0a0a1a] flex items-center justify-center select-none overflow-hidden">
+    <div className="h-[100dvh] w-[100dvw] bg-gradient-to-br from-[#0a0a1a] via-[#0d1025] to-[#0a0a1a] flex items-center justify-center select-none overflow-hidden">
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         {Array.from({ length: 20 }).map((_, i) => (
           <div

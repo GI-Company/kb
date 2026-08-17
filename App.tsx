@@ -212,7 +212,17 @@ const App: React.FC = () => {
   // ─── DESKTOP ───
   return (
     <ContextMenuProvider>
-      <div className="w-screen h-screen bg-[var(--kernos-bg-desktop)] overflow-hidden relative selection:bg-cyan-500/30">
+      {/* 100dvh/100dvw, not h-screen/w-screen (static 100vh/100vw). Reported
+          live: a real Android Chrome renders this with the address bar and
+          tab strip expanded — the layout viewport 100vh assumes is taller
+          than what's actually visible — and overflow-hidden below means
+          there's no scrolling to reach the difference. The taskbar and its
+          app menu are anchored bottom-0 inside this container, so they
+          rendered entirely off the reachable screen: present in the DOM,
+          invisible and untappable. dvh/dvw track the real visual viewport
+          as browser chrome expands and collapses, which is what this
+          actually needs to measure against. */}
+      <div className="w-[100dvw] h-[100dvh] bg-[var(--kernos-bg-desktop)] overflow-hidden relative selection:bg-cyan-500/30">
         {/* Dynamic Background Grid — decorative only, skipped in lite mode */}
         {!liteMode && (
           <div

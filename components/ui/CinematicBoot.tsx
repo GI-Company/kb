@@ -85,7 +85,7 @@ export const CinematicBoot: React.FC<{ onComplete: () => void }> = ({ onComplete
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0, scale: 1.05, filter: 'blur(10px)', transition: { duration: 0.8, ease: 'easeOut' } }}
-      className="w-screen h-screen bg-[#020202] flex flex-col items-center justify-center overflow-hidden font-mono selection:bg-cyan-500/30"
+      className="w-[100dvw] h-[100dvh] bg-[#020202] flex flex-col items-center justify-center overflow-hidden font-mono selection:bg-cyan-500/30"
     >
       <div className="w-full max-w-3xl px-8 relative z-10">
         
