@@ -455,6 +455,29 @@ async function runTrain(args: string[], ctx: IntelContext): Promise<CommandResul
     return bad('train', `"${path}" has no usable corrections — each line needs a "text" and "label" field.`);
   }
 
+  // Frozen held-out: reused verbatim across retrains once one exists, so
+  // "held-out accuracy" before and after actually measures the same test
+  // items rather than a pool that's grown since the last retrain — see
+  // docs/OE.md Phase 4. Absent on the first corrections-retrain for a
+  // classifier, or on one only ever trained by the Classifier app (which
+  // measures held-out accuracy but never persisted which items it used);
+  // either way this run freezes one now, for next time.
+  const frozenHeldOut = priorRecord.heldOutExamples;
+  const isFirstFreeze = !frozenHeldOut || frozenHeldOut.length === 0;
+
+  // A correction whose text exactly matches a frozen held-out item can't be
+  // folded into training — that would leak a test item into the train set,
+  // quietly invalidating held-out accuracy as a generalization measure from
+  // here on. Excluded, not silently trained on.
+  const heldOutTexts = new Set((frozenHeldOut ?? []).map(e => e.text));
+  const usable = corrections.filter(c => !heldOutTexts.has(c.text));
+  const contaminated = corrections.length - usable.length;
+  if (usable.length === 0) {
+    return bad('train',
+      `every correction for "${name}" is text that's already in the frozen held-out set, so none of it can be trained on.\n` +
+      'That set exists to measure generalization on unseen text — folding it into training would invalidate it.');
+  }
+
   // Train on confirmed labels only, never the model's own guesses — the
   // corrections file can ONLY contain human-confirmed labels because
   // `correct` is the only thing that writes to it. Retrained from scratch
@@ -463,32 +486,74 @@ async function runTrain(args: string[], ctx: IntelContext): Promise<CommandResul
   // be; at this size (a few hundred steps) retraining is cheap.
   const seed = localClassifier.currentExamples;
   const config = localClassifier.currentConfig;
-  const merged = [...seed, ...corrections];
-  const { train: trainSet, test: testSet } = splitHeldOut(merged);
+
+  let trainSet: LabeledExample[];
+  let testSet: LabeledExample[];
+  if (isFirstFreeze) {
+    const merged = [...seed, ...usable];
+    ({ train: trainSet, test: testSet } = splitHeldOut(merged));
+  } else {
+    // `seed` is exactly the previous round's trainSet — init() sets the
+    // service's `examples` to whatever it was called with — so it already
+    // excludes whatever landed in frozenHeldOut that round. Only the new
+    // corrections need the contamination check above; the seed doesn't.
+    trainSet = [...seed, ...usable];
+    testSet = frozenHeldOut!;
+  }
 
   localClassifier.init(trainSet, config);
   await localClassifier.train(steps);
   const heldOutAfter = await localClassifier.evaluate(testSet);
-  await localClassifier.saveAs(saveAsName, heldOutAfter);
+  const taughtItemAccuracy = await localClassifier.evaluate(usable);
+  await localClassifier.saveAs(saveAsName, heldOutAfter, testSet);
 
   const heldOutBefore = priorRecord.heldOutAccuracy;
+  // Only a genuine like-for-like comparison when both numbers came from the
+  // same frozen set — on the very first freeze, "before" (if it exists at
+  // all) is the Classifier app's own, different split, so it can't be
+  // presented as a real delta.
+  const comparable = !isFirstFreeze && heldOutBefore !== undefined;
+  const taughtCorrect = Math.round(taughtItemAccuracy * usable.length);
+
   if (asJson) {
     return ok(JSON.stringify({
       name, savedAs: saveAsName, steps,
-      seedExamples: seed.length, corrections: corrections.length, skippedCorrections: skipped,
-      mergedExamples: merged.length,
-      heldOutBefore: heldOutBefore !== undefined ? Number(heldOutBefore.toFixed(4)) : null,
+      seedExamples: seed.length,
+      corrections: corrections.length,
+      skippedCorrections: skipped,
+      contaminatedCorrections: contaminated,
+      trainExamples: trainSet.length,
+      heldOutExamples: testSet.length,
+      heldOutFrozen: !isFirstFreeze,
+      heldOutBefore: comparable ? Number(heldOutBefore!.toFixed(4)) : null,
       heldOutAfter: Number(heldOutAfter.toFixed(4)),
+      heldOutComparable: comparable,
+      taughtItemAccuracy: Number(taughtItemAccuracy.toFixed(4)),
+      taughtItemCorrect: taughtCorrect,
+      taughtItemTotal: usable.length,
     }) + '\n');
   }
 
-  const beforePct = heldOutBefore !== undefined ? `${(heldOutBefore * 100).toFixed(1)}%` : 'unknown';
+  const afterPct = `${(heldOutAfter * 100).toFixed(1)}%`;
   const skipNote = skipped ? ` (${skipped} line${skipped === 1 ? '' : 's'} skipped — not a valid record)` : '';
+  const contamNote = contaminated
+    ? ` (${contaminated} matched the frozen held-out set and ${contaminated === 1 ? 'was' : 'were'} excluded)`
+    : '';
+  const heldOutLine = comparable
+    ? `Held-out ${afterPct} (was ${(heldOutBefore! * 100).toFixed(1)}%, same frozen set of ${testSet.length}).\n`
+    : isFirstFreeze
+      ? `Held-out ${afterPct} on a newly frozen set of ${testSet.length} — no comparable prior baseline` +
+        (heldOutBefore !== undefined
+          ? ` (${(heldOutBefore * 100).toFixed(1)}% was measured on a different split, by the Classifier app)`
+          : '') +
+        `. Future retrains will compare against this same set.\n`
+      : `Held-out ${afterPct} on the frozen set of ${testSet.length}.\n`;
+
   return ok(
-    `Loaded "${name}" (${seed.length} examples, held-out ${beforePct}).\n` +
-    `Found ${corrections.length} correction${corrections.length === 1 ? '' : 's'}${skipNote}. Merged: ${merged.length} examples.\n` +
-    `Retrained ${steps} steps. Held-out ${(heldOutAfter * 100).toFixed(1)}%` +
-    (heldOutBefore !== undefined ? ` (was ${beforePct}).\n` : '.\n') +
+    `Loaded "${name}" (${seed.length} examples).\n` +
+    `Found ${corrections.length} correction${corrections.length === 1 ? '' : 's'}${skipNote}${contamNote}. Training on ${trainSet.length} examples.\n` +
+    `Retrained ${steps} steps. ${heldOutLine}` +
+    `Taught-item accuracy: ${(taughtItemAccuracy * 100).toFixed(1)}% (${taughtCorrect}/${usable.length} correction${usable.length === 1 ? '' : 's'} now classify correctly).\n` +
     `Saved as "${saveAsName}".\n`
   );
 }

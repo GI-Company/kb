@@ -295,7 +295,7 @@ class LocalClassifierService {
    * training accuracy alone has already proven misleading here (100% train,
    * 33% held-out on the first attempt).
    */
-  async saveAs(name: string, heldOutAccuracy?: number): Promise<void> {
+  async saveAs(name: string, heldOutAccuracy?: number, heldOutExamples?: LabeledExample[]): Promise<void> {
     if (!this.model || !this.tokenizer) throw new Error('No classifier has been trained yet in this tab.');
     if (!name.trim()) throw new Error('Give the classifier a name to save it under.');
 
@@ -308,6 +308,7 @@ class LocalClassifierService {
       vocabSize: this.tokenizer.vocabSize,
       exampleCount: this.encoded.length,
       heldOutAccuracy,
+      heldOutExamples,
       config: this.config,
       vocabChars: this.tokenizer.itos.join(''),
       examples: [...this.examples],

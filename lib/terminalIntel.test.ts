@@ -364,6 +364,8 @@ describe('train --from-corrections', () => {
   });
 
   it('trains only on human-confirmed corrections, merged with the seed set', async () => {
+    // No heldOutExamples on the prior record — this is the first
+    // corrections-retrain, so there's nothing to reuse yet.
     registryLoad.mockResolvedValue({ heldOutAccuracy: 0.85 });
     currentExamplesFn.mockReturnValue([{ text: 'seed one', label: 'files' }, { text: 'seed two', label: 'network' }]);
     currentConfigFn.mockReturnValue({ dModel: 24, mixerType: 'linear' });
@@ -384,13 +386,20 @@ describe('train --from-corrections', () => {
     );
     expect(initFn.mock.calls[0][0]).toHaveLength(3); // 80% cut of 4 examples via the mocked split
     expect(trainFn).toHaveBeenCalledWith(200); // default steps
-    expect(evaluateFn).toHaveBeenCalled();
-    expect(saveAsFn).toHaveBeenCalledWith('router', 0.93);
+    // Held-out eval on the newly frozen test slice, plus a separate
+    // taught-item eval over the corrections themselves.
+    expect(evaluateFn).toHaveBeenCalledWith([{ text: 'new two', label: 'network' }]);
+    expect(evaluateFn).toHaveBeenCalledWith([{ text: 'new one', label: 'files' }, { text: 'new two', label: 'network' }]);
+    // saveAs now persists the frozen split itself, not just its accuracy.
+    expect(saveAsFn).toHaveBeenCalledWith('router', 0.93, [{ text: 'new two', label: 'network' }]);
 
     expect(r.code).toBe(0);
     expect(r.stdout).toMatch(/Found 2 corrections \(1 line skipped/);
-    expect(r.stdout).toMatch(/held-out 85\.0%/);
-    expect(r.stdout).toMatch(/Held-out 93\.0% \(was 85\.0%\)/);
+    // First freeze: the old 85% isn't comparable (different, ungrown split), so it's labeled as such, not presented as a "was".
+    expect(r.stdout).toMatch(/no comparable prior baseline/);
+    expect(r.stdout).toMatch(/85\.0% was measured on a different split, by the Classifier app/);
+    expect(r.stdout).toMatch(/Held-out 93\.0% on a newly frozen set of 1/);
+    expect(r.stdout).toMatch(/Taught-item accuracy: 93\.0% \(2\/2 corrections now classify correctly\)/);
   });
 
   it('honours --steps and --save-as', async () => {
@@ -402,7 +411,7 @@ describe('train --from-corrections', () => {
     await runIntelCommand('train', ['--from-corrections', 'router', '--steps', '50', '--save-as', 'router-v2'], ctx);
 
     expect(trainFn).toHaveBeenCalledWith(50);
-    expect(saveAsFn).toHaveBeenCalledWith('router-v2', 0.6);
+    expect(saveAsFn).toHaveBeenCalledWith('router-v2', 0.6, [{ text: 'x', label: 'b' }]);
   });
 
   it('emits a summary record with --json', async () => {
@@ -414,7 +423,89 @@ describe('train --from-corrections', () => {
     const r = await runIntelCommand('train', ['--from-corrections', 'router', '--json'], ctx);
     expect(JSON.parse(r.stdout.trim())).toMatchObject({
       name: 'router', savedAs: 'router', seedExamples: 1, corrections: 1,
-      heldOutBefore: 0.5, heldOutAfter: 0.6,
+      heldOutAfter: 0.6,
+      // First freeze: not comparable to the Classifier app's 0.5, so the
+      // JSON says so explicitly rather than implying a real before/after.
+      heldOutBefore: null,
+      heldOutComparable: false,
+      heldOutFrozen: false,
+      taughtItemAccuracy: 0.6,
+      taughtItemTotal: 1,
     });
+  });
+
+  it('reuses the frozen held-out set across sequential retrains instead of reshuffling', async () => {
+    // Round 1: no frozen set yet, so one gets split and persisted.
+    registryLoad.mockResolvedValue({ heldOutAccuracy: 0.7 });
+    currentExamplesFn.mockReturnValue([
+      { text: 'seed one', label: 'files' }, { text: 'seed two', label: 'network' },
+      { text: 'seed three', label: 'files' }, { text: 'seed four', label: 'network' },
+    ]);
+    files.set('corrections.router.jsonl', JSON.stringify({ text: 'first correction', label: 'files' }) + '\n');
+    evaluateFn.mockResolvedValue(0.8);
+
+    await runIntelCommand('train', ['--from-corrections', 'router'], ctx);
+    const round1TrainSet = initFn.mock.calls[0][0];
+    const round1TestSet = saveAsFn.mock.calls[0][2];
+    expect(round1TestSet.length).toBeGreaterThan(0);
+
+    vi.clearAllMocks();
+    currentExamplesFn.mockReturnValue([]);
+    currentConfigFn.mockReturnValue({});
+
+    // Round 2: the registry now reflects what round 1 actually persisted —
+    // the seed is round 1's trainSet (what the singleton would really hold
+    // after that init()), and the prior record carries the frozen split.
+    registryLoad.mockResolvedValue({ heldOutAccuracy: 0.8, heldOutExamples: round1TestSet });
+    currentExamplesFn.mockReturnValue(round1TrainSet);
+    files.set('corrections.router.jsonl',
+      JSON.stringify({ text: 'first correction', label: 'files' }) + '\n' +
+      JSON.stringify({ text: 'second correction', label: 'network' }) + '\n'
+    );
+    evaluateFn.mockResolvedValue(0.9);
+
+    const r = await runIntelCommand('train', ['--from-corrections', 'router'], ctx);
+
+    // Not reshuffled: the exact same items, not merely the same length.
+    expect(evaluateFn).toHaveBeenCalledWith(round1TestSet);
+    expect(saveAsFn).toHaveBeenCalledWith('router', 0.9, round1TestSet);
+    expect(initFn.mock.calls[0][0]).not.toEqual(expect.arrayContaining(round1TestSet));
+
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/Held-out 90\.0% \(was 80\.0%, same frozen set/);
+  });
+
+  it('excludes a correction that matches a frozen held-out item instead of training on it', async () => {
+    const frozen = [{ text: 'held out text', label: 'network' }];
+    registryLoad.mockResolvedValue({ heldOutAccuracy: 0.8, heldOutExamples: frozen });
+    currentExamplesFn.mockReturnValue([{ text: 'seed one', label: 'files' }]);
+    files.set('corrections.router.jsonl',
+      JSON.stringify({ text: 'held out text', label: 'network' }) + '\n' +
+      JSON.stringify({ text: 'a real correction', label: 'files' }) + '\n'
+    );
+    evaluateFn.mockResolvedValue(0.85);
+
+    const r = await runIntelCommand('train', ['--from-corrections', 'router'], ctx);
+
+    // Only the non-contaminated correction reaches training or taught-item eval.
+    expect(initFn).toHaveBeenCalledWith(
+      [{ text: 'seed one', label: 'files' }, { text: 'a real correction', label: 'files' }],
+      expect.anything()
+    );
+    expect(evaluateFn).toHaveBeenCalledWith([{ text: 'a real correction', label: 'files' }]);
+    expect(r.stdout).toMatch(/1 matched the frozen held-out set and was excluded/);
+  });
+
+  it('refuses when every correction matches the frozen held-out set', async () => {
+    const frozen = [{ text: 'held out text', label: 'network' }];
+    registryLoad.mockResolvedValue({ heldOutAccuracy: 0.8, heldOutExamples: frozen });
+    currentExamplesFn.mockReturnValue([{ text: 'seed one', label: 'files' }]);
+    files.set('corrections.router.jsonl', JSON.stringify({ text: 'held out text', label: 'network' }) + '\n');
+
+    const r = await runIntelCommand('train', ['--from-corrections', 'router'], ctx);
+
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/already in the frozen held-out set/);
+    expect(initFn).not.toHaveBeenCalled();
   });
 });

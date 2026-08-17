@@ -45,6 +45,17 @@ export interface SavedClassifierRecord extends SavedClassifierMeta {
   vocabChars: string;
   /** Kept so a saved classifier can be inspected, extended, or retrained. */
   examples: LabeledExample[];
+  /**
+   * The frozen held-out set, once one exists — see lib/terminalIntel.ts's
+   * `train --from-corrections`. Persisting the actual EXAMPLES (not just
+   * the resulting accuracy number) is what makes a later retrain able to
+   * evaluate on the exact same test items again, rather than re-splitting
+   * a pool that has grown since and silently comparing two different
+   * samples under the same "held-out accuracy" label. Absent on a
+   * classifier that has only ever been trained by the Classifier app,
+   * which measures held-out accuracy but doesn't freeze which items it used.
+   */
+  heldOutExamples?: LabeledExample[];
   paramShapes: number[][];
   paramBuffers: ArrayBuffer[];
 }

@@ -25,7 +25,7 @@ map, not the territory.
 | Shell | VFS-backed cwd, pipes, redirection, history, tab completion, Ctrl+C |
 | Filters | Honest flags (unsupported ones refused, not silently dropped); VFS-aware text tools; `pick`/`where` on NDJSON |
 | Python | Same-origin Pyodide worker, signed-in only, full stdlib; **read AND write** — a script's file changes stage and commit only if the run succeeds, scoped to one flat directory matching the read bridge |
-| Local AI | ~8k-param classifiers, train/persist, glass-box `explain` (occlusion, not similarity), `correct`/`train --from-corrections` |
+| Local AI | ~8k-param classifiers, train/persist, glass-box `explain` (occlusion, not similarity), `correct`/`train --from-corrections` — held-out is frozen on first retrain and reused verbatim after (with a contamination guard on corrections), so before/after is a real comparison, not two different samples; taught-item accuracy is reported automatically, not just checked by hand |
 | Composition | `classify --json \| where \| pick` — a local model in a real pipe, still in-tab |
 | Capabilities (terminal) | `can`/`policy`, generated from the real dispatch tables (`VFS_COMMANDS`, `TEXT_FILTERS`, `PYTHON_COMMANDS`, `ALLOWED_COMMANDS`, ...) rather than hand-maintained, with a sync test asserting the copies match |
 | Capabilities (agent) | `can kernos.exec` describes what an agent's tool calls can reach, distinctly labeled from a terminal command; `kernos.exec`'s own `CALL_BUDGET` reuses the same `Capability` vocabulary the terminal shows, not a parallel naming scheme |
@@ -66,18 +66,25 @@ exist yet; that's Phase 5, untouched, honestly.
 
 ## 3. What's next
 
-**Phase 4 — retrain metric honesty + teach-loop polish.** Two concrete,
-found-not-invented gaps:
-- `train --from-corrections`'s held-out accuracy isn't measured on the same
-  test set before and after a retrain — each run re-splits the newly
-  merged pool 80/20 fresh, so "91.2% → 86.7%" compares two different
-  samples, not the same one. Needs a frozen split (or a fixed seed over the
-  original seed set) so before/after is actually comparable.
-- No automatic "taught-item accuracy" — whether the *specific* corrected
-  examples now classify correctly post-retrain. Verified manually once;
-  never reported by the tool itself.
-- Optional: margin/low-confidence routing suggests a cloud fallback or a
-  `correct` prompt, rather than trusting a narrow-margin call silently.
+**Phase 4 — retrain metric honesty.** Closed, verified live (not just
+unit-tested): `classifierRegistry`'s saved record now carries
+`heldOutExamples`, not just the accuracy number. `train --from-corrections`
+freezes a held-out split on the first corrections-retrain (or on a
+classifier that only ever went through the Classifier app, which measures
+held-out accuracy but never persisted which items it used) and reuses it
+verbatim on every retrain after — a correction whose text exactly matches a
+frozen item is excluded from training rather than silently leaking a test
+item into the train set. Taught-item accuracy (do the just-folded
+corrections now classify correctly) is computed via the existing
+`evaluate()` and reported on every run, not just checked by hand. Live
+round-trip on a real saved classifier: round 1 froze a 13-item held-out set
+and honestly declined to compare against the Classifier app's differently-
+split 86.7%; round 2 and 3 reused that same 13-item set and reported a
+genuine "was 84.6%" — the exact bug described above, confirmed fixed against
+real IndexedDB persistence, not a mock.
+- Still open, optional: margin/low-confidence routing suggests a cloud
+  fallback or a `correct` prompt, rather than trusting a narrow-margin call
+  silently. Not commissioned as part of Phase 4's metric-honesty scope.
 
 **Phase 5 — PWA, egress, storage depth.** Entirely unstarted, confirmed by
 absence rather than assumed: no manifest, no service worker, no OPFS
@@ -137,7 +144,7 @@ scheduled:
       `kernos.exec`'s RPC calls trace automatically
 - [x] Local classify/explain/correct loop stable, and *measured* — including
       the negative result on retrieval
-- [ ] Retrain metrics honest (frozen held-out split, taught-item accuracy)
+- [x] Retrain metrics honest (frozen held-out split, taught-item accuracy)
 - [ ] PWA installable; mobile import/export works
 - [ ] Docs match code (this table is true — checked 2026‑08‑17)
 - [ ] One clear wedge demo recorded, not just runnable
