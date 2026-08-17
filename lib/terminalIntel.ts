@@ -105,6 +105,11 @@ function summarize(env: Envelope): string {
     case 'agent.chat:stream':
     case 'ai.stream': return `${(p.chunk ?? '').length} chars`;
     case 'agent.chat:reply': return `${(p.reply ?? '').length} chars`;
+    // An agent's own vfs/bnlm/agent.ask calls inside kernos.exec — see
+    // lib/kernosExec.ts's trace() wrapper. Shown as ns.method rather than
+    // just method, since "write" alone doesn't say whether it was a file
+    // write or a kernel.publish.
+    case 'kernos.exec:call': return `${p.ns}.${p.method}: ${p.summary}${p.ok ? '' : ` → ${p.error}`}`;
     default: {
       const keys = Object.keys(p);
       return keys.length ? keys.slice(0, 3).join(', ') : '';

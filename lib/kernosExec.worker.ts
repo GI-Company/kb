@@ -32,8 +32,25 @@ function rpc(ns: string, method: string, args: unknown[]): Promise<unknown> {
   });
 }
 
-const makeNamespace = (ns: string, methods: string[]) =>
-  Object.fromEntries(methods.map(m => [m, (...args: unknown[]) => rpc(ns, m, args)]));
+/**
+ * Forwards any method call on this namespace to the host as an RPC. Not
+ * built from a fixed method list — the host's own handler table
+ * (lib/kernosExec.ts) is the single source of truth for which
+ * namespace.method combinations actually exist, not a second list
+ * duplicated here that could drift from it.
+ *
+ * That drift was a real bug, not a hypothetical one: the old version built
+ * each namespace from Object.fromEntries(methods.map(...)) with an
+ * explicit array (`makeNamespace('vfs', ['read','write','list','create'])`).
+ * Calling vfs.delete() then threw a plain "vfs.delete is not a function"
+ * from inside the sandbox — the worker rejected it before any RPC went
+ * out, so the host's own "No such capability" handling (and the trace
+ * entry it produces) never ran for a method this list hadn't heard of.
+ * Every method the agent's script calls now reaches the host; the host
+ * decides what exists, once, in one place.
+ */
+const makeNamespace = (ns: string) =>
+  new Proxy({}, { get: (_target, method: string) => (...args: unknown[]) => rpc(ns, method, args) });
 
 self.onmessage = async (event: MessageEvent) => {
   const msg = event.data;
@@ -50,13 +67,16 @@ self.onmessage = async (event: MessageEvent) => {
   if (msg?.type !== 'run') return;
 
   try {
-    const vfs = makeNamespace('vfs', ['read', 'write', 'list', 'create']);
-    const bnlm = makeNamespace('bnlm', ['train', 'generate', 'score', 'classify']);
-    const agent = makeNamespace('agent', ['ask']);
+    const vfs = makeNamespace('vfs');
+    const bnlm = makeNamespace('bnlm');
+    const agent = makeNamespace('agent');
     // publish is fire-and-forget from here; subscribe is deliberately absent
-    // because a callback can't survive a terminate() and would leak a
-    // listener on the host for a thread that no longer exists.
-    const kernel = makeNamespace('kernel', ['publish']);
+    // from the HOST's handler table (not this list, which no longer
+    // exists) — a callback can't survive a terminate() and would leak a
+    // listener on the host for a thread that no longer exists. Calling
+    // kernel.subscribe() now reaches the host and gets a real "No such
+    // capability" error, rather than failing silently here beforehand.
+    const kernel = makeNamespace('kernel');
 
     // console is proxied so output still reaches the host's devtools rather
     // than vanishing into a worker nobody is inspecting.

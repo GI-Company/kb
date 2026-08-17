@@ -4,7 +4,7 @@
 
 import { getSession } from './auth';
 import { CommandResult } from './terminalFs';
-import { CAPABILITY_INFO, COMMAND_CAPABILITIES, NL_TRANSLATOR_CAPABILITY, Capability } from './terminalCapabilities';
+import { CAPABILITY_INFO, COMMAND_CAPABILITIES, AGENT_TOOL_CAPABILITIES, NL_TRANSLATOR_CAPABILITY, Capability } from './terminalCapabilities';
 
 export const META_COMMANDS = new Set(['can', 'policy']);
 
@@ -38,7 +38,8 @@ async function runCan(args: string[]): Promise<CommandResult> {
   const command = args.find(a => !a.startsWith('-'));
   if (!command) return bad('can', `missing command\n${META_USAGE.can}`, 2);
 
-  const caps = COMMAND_CAPABILITIES[command];
+  const isAgentTool = !COMMAND_CAPABILITIES[command] && AGENT_TOOL_CAPABILITIES[command];
+  const caps = COMMAND_CAPABILITIES[command] ?? AGENT_TOOL_CAPABILITIES[command];
   if (!caps) {
     return bad('can', `"${command}" is not a command this shell knows about.\nType "help" to see what it can do.`);
   }
@@ -51,7 +52,13 @@ async function runCan(args: string[]): Promise<CommandResult> {
     const { note } = availability(cap, signedIn);
     return `  ${cap.padEnd(11)} — ${CAPABILITY_INFO[cap].description}. ${note}.`;
   });
-  return ok(`${command}: ${caps.join(', ')}\n${lines.join('\n')}\n`);
+  // Distinct from a terminal command: this is what an AGENT can reach
+  // through it, not something typed at the prompt — worth saying plainly
+  // rather than presenting both the same way.
+  const header = isAgentTool
+    ? `${command} (agent tool, not typed at the prompt): ${caps.join(', ')}`
+    : `${command}: ${caps.join(', ')}`;
+  return ok(`${header}\n${lines.join('\n')}\n`);
 }
 
 async function runPolicy(): Promise<CommandResult> {

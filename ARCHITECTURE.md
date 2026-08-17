@@ -1,6 +1,8 @@
 # Architecture
 
-This document maps what's actually running today, and where each piece came from. The original Kernos OS was a Go microkernel behind a React shell; the original BNLM was a standalone static site. This app is the React shell, kept, retargeted at a stateless serverless backend, with BNLM's engine vendored in as a library the shell can drive.
+For where this is headed — what's shipped, what's next, what's deliberately
+not ours — see [docs/OE.md](docs/OE.md). This document maps what's actually
+running today, and where each piece came from. The original Kernos OS was a Go microkernel behind a React shell; the original BNLM was a standalone static site. This app is the React shell, kept, retargeted at a stateless serverless backend, with BNLM's engine vendored in as a library the shell can drive.
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐

@@ -65,6 +65,23 @@ describe('can', () => {
     expect(r.stdout).toContain('model:local');
     expect(r.stdout).toContain('vfs');
   });
+
+  // kernos.exec is reachable from a chat turn or a DAG node, never typed
+  // at the terminal prompt — before this it fell into the same "not a
+  // command this shell knows about" message as a genuine typo.
+  it('describes an agent tool, distinctly from a terminal command', async () => {
+    const r = await runMetaCommand('can', ['kernos.exec']);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('agent tool');
+    expect(r.stdout).toContain('vfs');
+    expect(r.stdout).toContain('model:local');
+    expect(r.stdout).toContain('model:cloud');
+  });
+
+  it('does not call a real terminal command an agent tool', async () => {
+    const r = await runMetaCommand('can', ['ls']);
+    expect(r.stdout).not.toContain('agent tool');
+  });
 });
 
 describe('policy', () => {

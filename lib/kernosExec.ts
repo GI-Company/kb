@@ -34,6 +34,7 @@ import { localModel } from './localModel';
 import { localClassifier } from './localClassifier';
 import { fetchGroqText } from './groqFetch';
 import { VfsOverlay } from './vfsOverlay';
+import type { Capability } from './terminalCapabilities';
 
 export interface KernosExecResult {
   ok: boolean;
@@ -48,9 +49,56 @@ const MAX_TIMEOUT_MS = 20000;
 // a tool call inside a chat turn or DAG step, not a batch job. A timeout
 // alone doesn't bound cost, because in-flight calls keep spending after the
 // caller has been handed an error.
-const CALL_BUDGET = { agentAsk: 5, bnlm: 5, vfs: 50, kernelPublish: 20 };
+//
+// Keys reuse lib/terminalCapabilities.ts's Capability vocabulary wherever
+// kernos.exec actually exercises that capability — 'vfs' and 'model:local'/
+// 'model:cloud' below are the SAME strings `can`/`policy` show a terminal
+// user, not a second naming scheme for the same three ideas. Previously
+// these were agentAsk/bnlm/vfs — accurate, but their own vocabulary,
+// invisible from the terminal side; `can classify` and "how much can an
+// agent's kernos.exec call spend on model:local" had no way to agree they
+// were talking about the same budget. kernelPublish has no Capability
+// equivalent and keeps its own name: publishing to the bus isn't a
+// capability exposed to terminal commands at all, so there's nothing to
+// unify it with.
+// This array exists only so TypeScript checks each string against the
+// real Capability union below — an `as` cast on CALL_BUDGET itself would
+// have suppressed exactly the typo it's meant to catch: a misspelled key
+// creates a budget that silently never triggers (remaining[undefinedKey]--
+// is NaN, and NaN <= 0 is false), not a compile error.
+const _capabilityBudgetKeys: Capability[] = ['model:cloud', 'model:local', 'vfs'];
+void _capabilityBudgetKeys;
+
+const CALL_BUDGET = {
+  'model:cloud': 5,
+  'model:local': 5,
+  vfs: 50,
+  kernelPublish: 20,
+} as const;
 
 const BLOCKED_TOPICS = ['vm.spawn', 'task.run', 'sys.consolidate'];
+
+/**
+ * One line describing an RPC call, for `trace` — enough to know what ran
+ * without dumping full payloads. A vfs.write carrying a megabyte of
+ * content has no business in a log meant to be skimmed; its length does.
+ */
+function summarizeCall(ns: string, method: string, args: unknown[]): string {
+  const s = (v: unknown, max = 40) => { const t = String(v); return t.length > max ? t.slice(0, max) + '…' : t; };
+  switch (`${ns}.${method}`) {
+    case 'vfs.read': return `read(${s(args[0])})`;
+    case 'vfs.write': return `write(${s(args[0])}, ${String(args[1] ?? '').length} chars)`;
+    case 'vfs.list': return `list(${s(args[0])})`;
+    case 'vfs.create': return `create(${s(args[0])}, "${s(args[1])}")`;
+    case 'bnlm.train': return `train(${String(args[0] ?? '').length} chars corpus)`;
+    case 'bnlm.generate': return `generate("${s(args[0])}")`;
+    case 'bnlm.score': return `score(${String(args[0] ?? '').length} chars)`;
+    case 'bnlm.classify': return `classify("${s(args[0])}")`;
+    case 'agent.ask': return `ask(${s(args[0])}, "${s(args[1])}")`;
+    case 'kernel.publish': return `publish(${s(args[0])})`;
+    default: return `${ns}.${method}(…)`;
+  }
+}
 
 export async function runKernosExec(
   code: string,
@@ -92,13 +140,13 @@ export async function runKernosExec(
       },
     },
     bnlm: {
-      train: (corpus: string, steps?: number) => { spend('bnlm'); return localModel.ensureInitAndTrain(corpus, steps ?? 200); },
-      generate: (prompt: string, maxTokens?: number) => { spend('bnlm'); return localModel.generate(prompt, maxTokens ?? 60); },
-      score: (text: string) => { spend('bnlm'); return localModel.score(text); },
-      classify: (text: string) => { spend('bnlm'); return localClassifier.predict(text); },
+      train: (corpus: string, steps?: number) => { spend('model:local'); return localModel.ensureInitAndTrain(corpus, steps ?? 200); },
+      generate: (prompt: string, maxTokens?: number) => { spend('model:local'); return localModel.generate(prompt, maxTokens ?? 60); },
+      score: (text: string) => { spend('model:local'); return localModel.score(text); },
+      classify: (text: string) => { spend('model:local'); return localClassifier.predict(text); },
     },
     agent: {
-      ask: (personaId: string, prompt: string) => { spend('agentAsk'); return fetchGroqText(personaId, prompt); },
+      ask: (personaId: string, prompt: string) => { spend('model:cloud'); return fetchGroqText(personaId, prompt); },
     },
     kernel: {
       publish: (topic: string, payload: unknown) => {
@@ -175,17 +223,32 @@ export async function runKernosExec(
 
       if (msg?.type !== 'rpc') return;
 
+      const summary = summarizeCall(msg.ns, msg.method, msg.args || []);
+      // Every RPC call traces here, in one place, rather than inside each
+      // handler — a new capability added to the table below is automatically
+      // visible to `trace` without anyone having to remember to wire it up.
+      // This is what makes an agent's use of vfs/bnlm/agent stop being
+      // invisible to the glass box: previously only an EXPLICIT
+      // kernel.publish call from the agent's own code reached the bus at
+      // all, so a classify or a file write via kernos.exec left no trace
+      // unless the agent happened to also announce it itself.
+      const trace = (ok: boolean, error?: string) =>
+        kernel.publish('kernos.exec:call', { ns: msg.ns, method: msg.method, ok, summary, error });
+
       // An unknown namespace/method is a bug or a probe; either way it is
       // reported to the sandbox as a failed call rather than ignored, so the
       // agent gets a usable error instead of hanging.
       const fn = handlers[msg.ns]?.[msg.method];
       if (!fn) {
-        worker.postMessage({ type: 'rpc:result', id: msg.id, ok: false, error: `No such capability: ${msg.ns}.${msg.method}` });
+        const error = `No such capability: ${msg.ns}.${msg.method}`;
+        trace(false, error);
+        worker.postMessage({ type: 'rpc:result', id: msg.id, ok: false, error });
         return;
       }
 
       try {
         const value = await fn(...(msg.args || []));
+        trace(true);
         // Results cross by structured clone; anything unclonable would throw
         // inside postMessage and hang the sandbox waiting for a reply that
         // never comes. Reported as an error instead.
@@ -201,8 +264,12 @@ export async function runKernosExec(
         }
       } catch (err: any) {
         // Budget overruns land here too, which is what stops a runaway loop
-        // from spending real API credit even before the timeout fires.
-        worker.postMessage({ type: 'rpc:result', id: msg.id, ok: false, error: err?.message || String(err) });
+        // from spending real API credit even before the timeout fires — and
+        // now that denial is traced too, not just silently thrown back to
+        // the agent's own script.
+        const error = err?.message || String(err);
+        trace(false, error);
+        worker.postMessage({ type: 'rpc:result', id: msg.id, ok: false, error });
       }
     };
 

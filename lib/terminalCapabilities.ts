@@ -116,3 +116,21 @@ COMMAND_CAPABILITIES['help'] = [];
  * costs. Kept here so that one fact lives in one place too.
  */
 export const NL_TRANSLATOR_CAPABILITY: Capability = 'model:cloud';
+
+/**
+ * Agent tools — reachable from a chat turn or a task.run DAG node, never
+ * typed at the terminal prompt, so they were invisible to `can` entirely
+ * before this: "kernos.exec" fell into the same "not a command this shell
+ * knows about" message as a genuine typo, which was true but unhelpful for
+ * anyone actually trying to answer "what can an agent reach." kernos.exec's
+ * own real gates live in lib/kernosExec.ts (CALL_BUDGET, reusing this exact
+ * Capability vocabulary) — this is a summary for `can` to point at, not a
+ * second source of truth for the limits themselves.
+ */
+export const AGENT_TOOL_CAPABILITIES: Record<string, Capability[]> = {
+  'kernos.exec': ['vfs', 'model:local', 'model:cloud'],
+  'bnlm.train': ['model:local'],
+  'bnlm.generate': ['model:local'],
+  'bnlm.score': ['model:local'],
+  'bnlm.classify': ['model:local'],
+};

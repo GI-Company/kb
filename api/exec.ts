@@ -129,6 +129,7 @@ export default async function handler(req: any, res: any) {
         `  correct/train are not pipeline stages — they mutate a saved model, not a stream.\n\n` +
         `Meta:\n` +
         `  can <command>          what a command needs, and whether that's available right now\n` +
+        `  can kernos.exec        the same, for what an agent's tool calls can reach — not typed here\n` +
         `  policy                 the same thing, summarized for this session\n\n` +
         `Composition (piped and redirected in your browser, never sent to the server):\n` +
         `  cmd | cmd   cmd > file   cmd >> file      (no &&, ||, ; or globbing)\n\n` +

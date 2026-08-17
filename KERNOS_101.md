@@ -1,5 +1,9 @@
 # Kernos + BNLM 101 — The Complete Beginner's Guide
 
+> For the roadmap — what's shipped, what's next, what's deliberately not
+> ours — see [docs/OE.md](docs/OE.md). This guide is about using what's
+> already here.
+
 > This is a browser-based AI workspace. Six Groq-backed agent personas live in the Chat app; a real, from-scratch trainable language model lives in the Local Model app and runs entirely in your tab — no GPU, no server round trip for inference.
 
 ---
