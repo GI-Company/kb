@@ -123,6 +123,26 @@ export default async function handler(req: Request): Promise<Response> {
     async start(controller) {
       const reader = groqResp.body!.getReader();
       let buffer = '';
+
+      // Parses one already-unwrapped SSE line ("data: {...}") and forwards
+      // its content delta, if any. Shared between the main read loop and
+      // the post-loop flush below so both handle a line identically.
+      const emitLine = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) return;
+        const data = trimmed.slice(5).trim();
+        if (data === '[DONE]') return;
+        try {
+          const parsed = JSON.parse(data);
+          const delta = parsed.choices?.[0]?.delta?.content;
+          if (delta) {
+            controller.enqueue(encoder.encode(JSON.stringify({ chunk: delta }) + '\n'));
+          }
+        } catch {
+          // Malformed/partial SSE line — skip it.
+        }
+      };
+
       try {
         while (true) {
           const { done, value } = await reader.read();
@@ -130,22 +150,17 @@ export default async function handler(req: Request): Promise<Response> {
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('data:')) continue;
-            const data = trimmed.slice(5).trim();
-            if (data === '[DONE]') continue;
-            try {
-              const parsed = JSON.parse(data);
-              const delta = parsed.choices?.[0]?.delta?.content;
-              if (delta) {
-                controller.enqueue(encoder.encode(JSON.stringify({ chunk: delta }) + '\n'));
-              }
-            } catch {
-              // Malformed/partial SSE line — skip it.
-            }
-          }
+          for (const line of lines) emitLine(line);
         }
+        // Groq always terminates its SSE stream with the final "data: ..."
+        // line for the last content delta, but nothing guarantees that
+        // line's trailing newline arrives in the same read() as the JSON
+        // before it — reader.read() can report done:true with the last
+        // line still parked, unflushed, in `buffer`. This is the same bug
+        // class services/kernel.ts had client-side (see that fix's commit)
+        // — here it's server-side, so skipping it drops the tail of the
+        // reply before it ever reaches the client at all.
+        if (buffer.trim()) emitLine(buffer);
       } catch (err: any) {
         controller.enqueue(encoder.encode(JSON.stringify({ error: err?.message || 'stream error' }) + '\n'));
       } finally {
