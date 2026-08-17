@@ -21,7 +21,7 @@ Edit `.env.local`:
 
 ```
 GROQ_API_KEY=your-key-from-console.groq.com/keys
-GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MODEL=openai/gpt-oss-120b
 ```
 
 ```bash
@@ -74,9 +74,9 @@ Each agent has its own system prompt **and its own Groq model**, picked to match
 
 | Agent | Role | Model | What It Does |
 |---|---|---|---|
-| **Dispatcher** | Triage | `allam-2-7b` | Fires on nearly every action, so it gets the largest daily budget rather than the deepest reasoning. Plans DAGs, translates `? find large files` into a shell command, can call tools |
+| **Dispatcher** | Triage | `qwen/qwen3.6-27b` | Fires on nearly every action, so it gets the largest daily budget rather than the deepest reasoning. Plans DAGs, translates `? find large files` into a shell command, can call tools |
 | **Architect** | Review | `openai/gpt-oss-120b` | Reviews plans and DAGs for safety and correctness |
-| **Kernos Assistant** | Chat | `llama-3.3-70b-versatile` | Default conversational agent; can call tools |
+| **Kernos Assistant** | Chat | `openai/gpt-oss-120b` | Default conversational agent; can call tools |
 | **DevOps Engineer** | Infra | `qwen/qwen3.6-27b` | Deployment/CI/CD advice, scoped to what this sandbox can actually run |
 | **Security Auditor** | Defense | `openai/gpt-oss-safeguard-20b` | Security review — the safety-tuned model is a direct fit |
 | **Code Review** | Quality | `openai/gpt-oss-120b` | Bug/perf/readability review |

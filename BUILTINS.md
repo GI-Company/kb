@@ -292,7 +292,7 @@ $ trace --last 5
 12:04:31  vm.spawn        terminal → kernel     whoami
 12:04:31  vm.stdout       kernel → terminal     14 bytes
 12:04:33  sys.terminal.intent  terminal → kernel  "count the lines"
-12:04:34  agent.chat      → agent-shell        llama-3.3-70b-versatile
+12:04:34  agent.chat      → agent-shell        openai/gpt-oss-20b
 12:04:35  sys.terminal.intent:ack  kernel → terminal  wc -l notes.md
 ```
 

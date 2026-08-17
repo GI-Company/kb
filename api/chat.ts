@@ -13,7 +13,7 @@ import { checkRateLimit, getClientIp, rateLimitResponseHeaders } from '../lib/ra
 export const config = { runtime: 'edge' };
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const DEFAULT_MODEL = 'llama-3.3-70b-versatile';
+const DEFAULT_MODEL = 'openai/gpt-oss-120b';
 const RATE_LIMIT_PER_MIN = Number(process.env.RATE_LIMIT_CHAT_PER_MIN) || 20;
 
 interface ChatRequestBody {

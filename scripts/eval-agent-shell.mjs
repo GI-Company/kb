@@ -5,7 +5,9 @@
 // not preference. allam-2-7b answered "show me my files" with `files: ls` —
 // echoing a category label straight out of the prompt — and "find the
 // biggest files" with `df -h`. llama-3.3-70b-versatile scored 6/7 on the
-// cases below. That comparison lived in a chat transcript, which meant the
+// cases below, and was the model in production until Groq project model
+// permissions stopped allowing it — openai/gpt-oss-20b, its replacement,
+// scored 7/7. That comparison lived in a chat transcript, which meant the
 // next person to swap models would have had nothing to compare against and
 // would have judged it on two hand-typed examples.
 //
@@ -76,8 +78,8 @@ const CASES = [
   },
 ];
 
-/** Score at the time agent-shell was set to llama-3.3-70b-versatile. */
-const BASELINE = 6;
+/** Score at the time agent-shell was set to openai/gpt-oss-20b. */
+const BASELINE = 7;
 
 class RateLimited extends Error {}
 

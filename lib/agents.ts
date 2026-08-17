@@ -197,10 +197,10 @@ export const DEFAULT_AGENTS: AgentPersona[] = [
     // Re-run it before and after any model change. allam-2-7b — what this
     // used to borrow from the Dispatcher — scores 4/7 there, answering
     // "show me my files" with `files` and "find the biggest files" with
-    // `df -h`. This model scores 6/7. Translating one sentence into one
-    // exact command line is a precision task, not a fast one; don't
-    // downgrade on the strength of two hand-typed examples.
-    model: 'llama-3.3-70b-versatile',
+    // `df -h`. See the eval script's own BASELINE constant for the current
+    // number this model scores; keep that constant and this comment in
+    // sync with reality, not with whatever model used to be here.
+    model: 'openai/gpt-oss-20b',
     fallbackModel: 'qwen/qwen3.6-27b',
     internal: true,
     systemPrompt: `You translate a plain-English request into ONE command line for the Kernos terminal.
@@ -222,8 +222,8 @@ If the request cannot be expressed as one of these commands, reply with exactly:
   {
     id: 'agent-dispatcher',
     displayName: 'Dispatcher',
-    model: 'allam-2-7b',
-    fallbackModel: 'qwen/qwen3.6-27b',
+    model: 'qwen/qwen3.6-27b',
+    fallbackModel: 'openai/gpt-oss-20b',
     systemPrompt: `You are the Dispatcher agent inside Kernos, a browser-native AI workspace.
 You have two distinct output modes. Pick exactly one per response — never blend them.
 
@@ -244,7 +244,7 @@ ${GLASS_BOX_CONTRACT}`,
     id: 'agent-architect',
     displayName: 'Architect',
     model: 'openai/gpt-oss-120b',
-    fallbackModel: 'llama-3.3-70b-versatile',
+    fallbackModel: 'qwen/qwen3.6-27b',
     systemPrompt: `You are the Architect agent inside Kernos, a browser-native AI workspace.
 Your role is to deeply review DAGs, plans, and code for safety, correctness, and optimization.
 When reviewing a DAG, check for:
@@ -258,7 +258,7 @@ For general questions, think deeply before answering.`,
   {
     id: 'agent-chat',
     displayName: 'Kernos Assistant',
-    model: 'llama-3.3-70b-versatile',
+    model: 'openai/gpt-oss-120b',
     fallbackModel: 'qwen/qwen3.6-27b',
     systemPrompt: `You are the Kernos Assistant, the primary conversational AI for Kernos users.
 You are a highly intelligent, empathetic, and helpful digital companion.
@@ -274,7 +274,7 @@ ${GLASS_BOX_CONTRACT}`,
     id: 'agent-devops',
     displayName: 'DevOps Engineer',
     model: 'qwen/qwen3.6-27b',
-    fallbackModel: 'llama-3.3-70b-versatile',
+    fallbackModel: 'openai/gpt-oss-120b',
     systemPrompt: `You are the DevOps Engineer agent inside Kernos.
 You specialize in infrastructure, deployment, CI/CD pipelines, and system administration.
 When asked about builds, deployments, or infrastructure:
