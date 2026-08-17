@@ -2,7 +2,7 @@
 
 # 🧠 Kernos + BNLM
 
-**A browser-native AI workspace: a Groq-powered agent shell wrapped around a language model that trains and runs entirely in your tab.**
+**A browser-native operating environment: train a private intent classifier on your own data, see exactly why it decided what it decided, correct its mistakes, and watch the fix measured honestly — all offline, all in your tab. Groq is the cloud brain for hard reasoning; a from-scratch generative language model that trains in-browser comes along for the ride.**
 
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev)
 [![Vite](https://img.shields.io/badge/Vite-6-646CFF?style=flat-square&logo=vite&logoColor=white)](https://vitejs.dev)
@@ -15,14 +15,11 @@
 
 ## What this is
 
-This project merges two things into one deployable app:
+The wedge: **train a private intent router in the browser, run it offline, inspect why it decided what it decided, teach its mistakes.** Paste some labeled examples (or have Groq generate them), train a ~8k-parameter classifier in seconds, and from then on every decision is local and free — no API call, no data leaving the tab. `explain` shows the actual per-character occlusion attribution behind a call, not a similarity-search guess. `correct` + `train --from-corrections` fold a fix back in, and the tool reports the honest before/after: a held-out set frozen on first retrain and reused verbatim after, so the comparison is real, plus whether the specific correction you just taught it now classifies correctly. That whole loop — generate → train → classify → explain → correct → retrain — runs end to end in one terminal session, offline after the first Groq call.
 
-- **Kernos** — a polished React/Vite desktop-in-the-browser shell (window manager, taskbar, terminal, chat, IDE, boot sequence).
-- **BNLM** — a real, working decoder-only Transformer, tokenizer, optimizer, and training loop, written in plain JS + one WGSL compute shader, that initializes, trains, and runs inference **entirely client-side**. No GPU cluster, no server round trip for inference.
+Around that wedge sits **Kernos**, a real operating environment, not just a demo shell: a VFS-backed terminal with pipes and redirection, a capability system (`can`/`policy`) that tells you exactly what any command or agent tool call can reach, a `trace` that shows every host RPC including denials, and agent/Python filesystem writes that stage in memory and only commit if the run actually succeeds — a script that writes a file and then crashes leaves nothing behind. **Groq** is the cloud brain for what a small local model can't do (six routed agent personas, hard reasoning, dataset generation), and **BNLM** — a real, working decoder-only Transformer, tokenizer, optimizer, and training loop in plain JS + one WGSL compute shader — is a second, generative local model those agents can direct: train it on pasted or Groq-generated text and generate from it, entirely client-side.
 
-Glued together, the idea is: **Groq is the fast cloud brain** (six agent personas — Dispatcher, Architect, Kernos Assistant, DevOps, Security, Code Review — each routed to its own Groq model, with a fallback if one gets rate-limited), and **BNLM is a small local specialist model** those agents can direct — spin up, train on pasted or Groq-generated text, and generate from, live in the user's browser, with zero inference cost and no data leaving the tab.
-
-This is a merge and a rewrite, not a new product from scratch — see [ARCHITECTURE.md](./ARCHITECTURE.md) for what came from where, and what got cut to make it deployable on Vercel.
+See [docs/OE.md](./docs/OE.md) for the actual current map — what's shipped, what's explicitly next, and what's deliberately rejected (with the measurements behind those calls). This is a merge and a rewrite, not a new product from scratch — see [ARCHITECTURE.md](./ARCHITECTURE.md) for what came from where, and what got cut to make it deployable on Vercel.
 
 ## Quick start
 
@@ -40,16 +37,20 @@ Get a Groq API key at [console.groq.com/keys](https://console.groq.com/keys). It
 
 ## What's actually working
 
+- **Local intelligence** — the Intent Classifier app trains a small (~8k-param) router on your labeled examples, no GPU, seconds not minutes. From the terminal: `classify <text>` (label plus runner-up and margin, so a narrow call is never silently confident), `explain` (real per-character occlusion attribution — removed one token at a time and watch which ones were actually holding the prediction up, not a similarity guess), `correct <label>` (teach it), `train --from-corrections <name>` (retrain from seed + corrections). Held-out accuracy is frozen on the first corrections-retrain and reused verbatim on every retrain after, with a contamination guard so a correction can't leak into its own test set — before/after is a real comparison, not two different random splits. Taught-item accuracy (do the specific corrections you just made now classify correctly) is reported automatically. All three commands take `--json` and compose in real pipes: `classify --json | where .confidence < 0.6 | pick .text`.
+- **Glass box, not a black box** — `trace` reads the real message-bus log and shows every host RPC an agent's `kernos.exec` call made, including denials (a budget limit or missing capability shows up, it doesn't just silently no-op). `can <command>` and `policy` are generated from the actual dispatch tables (not hand-maintained, there's a test that asserts the copies match), and `can kernos.exec` answers the same question for what an agent's own tool calls can reach.
+- **Staged, not immediate, agent/Python writes** — `kernos.exec` and the terminal's Python write-back both stage filesystem writes in memory through one shared overlay and only commit them if the run finishes with success. A sandboxed script that writes a file and then throws, times out, or gets its worker killed leaves nothing durable behind.
+- **Terminal** — a real shell, not a prompt-shaped text box. Filesystem commands (`ls`/`cd`/`cat`/`mkdir`/`write`/`rm`/`mv`/`cp`) act on your actual persistent files in the browser, with a working directory, tab completion and persistent history. Pipes and redirection (`|`, `>`, `>>`) are composed client-side and never sent anywhere. Anything else runs as an ephemeral sandboxed command, allowlisted (27 commands, argument-sanitized) in a fresh function invocation. Signed-in accounts additionally get **real CPython in the tab** (see below), native `curl`/`dig`/`ping` with SSRF protection, and `render <url>` for a headless-Chromium page load or screenshot.
+- **Python** — `python -c "…"` and `python script.py` run genuine CPython 3.14 compiled to WebAssembly, on a Web Worker. Files in the working directory are readable AND writable with `open()`, staged through the same commit-on-success overlay as `kernos.exec`. Scoped to that one flat directory: a script that `os.mkdir()`s a subdirectory has that silently excluded, with a note saying so. It composes with pipes and redirection like any other command, and `Ctrl+C` terminates the worker outright — a `while True: pass` is actually killable, and the UI keeps painting the whole time. The ~13 MB runtime is served from our own origin (the CSP allows no CDN scripts) and is fetched lazily on first use, for signed-in accounts only.
+- **Installable, offline-safe shell** — a web app manifest and a same-origin-only service worker (network-first for pages, cache-first for hashed build assets) make this installable on desktop and mobile, without touching `/api/*` or breaking the cross-origin isolation BNLM's parallel training depends on. On mobile, `FileSystem` gets a real file-picker import and Web Share export; on desktop, an optional File System Access mount writes changes straight back to a real folder on disk for the session.
 - **AI Chat** — six Groq-backed agent personas, each routed to its own model with a rate-limit fallback, streamed token-by-token, multi-turn history, image input, auto-saved conversations.
-- **Local Model app** — the full BNLM loop in a window: paste or Groq-generate training text, pick a mixer (attention / linear / RWKV), initialize, train (single-threaded or data-parallel across Web Workers), generate, score, export as a quantized `.qlm1` file. Trained models can be **saved by name and reloaded after a refresh** — a trained model isn't a session-scoped toy, it persists.
+- **Local Model app (BNLM, generative)** — a second, separate local model, for text generation rather than classification: paste or Groq-generate training text, pick a mixer (attention / linear / RWKV), initialize, train (single-threaded or data-parallel across Web Workers), generate, score, export as a quantized `.qlm1` file. Trained models can be **saved by name and reloaded after a refresh** — a trained model isn't a session-scoped toy, it persists.
 - **Agentic tool-calling** — ask any AI Chat agent to "train a model on this text" or "generate from the local model," and it emits a structured tool call the client executes against the BNLM engine, reporting back into the chat. Agents can also emit `kernos.exec` to run real TypeScript in a sandbox for anything a single `bnlm.*` call doesn't cover.
 - **Accounts** — real sign-up/sign-in via Supabase Auth, with chat history, the virtual filesystem, and saved models syncing across devices. Guest access stays available with no signup (data stays in that browser, metered to 15 min/day).
-- **Terminal** — a real shell, not a prompt-shaped text box. Filesystem commands (`ls`/`cd`/`cat`/`mkdir`/`write`/`rm`/`mv`/`cp`) act on your actual persistent files in the browser, with a working directory, tab completion and persistent history. Pipes and redirection (`|`, `>`, `>>`) are composed client-side and never sent anywhere. Anything else runs as an ephemeral sandboxed command, allowlisted and argument-sanitized, in a fresh function invocation. Signed-in accounts additionally get **real CPython in the tab** (see below), native `curl`/`dig`/`ping` with SSRF protection, and `render <url>` for a headless-Chromium page load or screenshot.
-- **Python** — `python -c "…"` and `python script.py` run genuine CPython 3.14 compiled to WebAssembly, on a Web Worker. Files in the working directory are readable AND writable with `open()` — a script's writes stage in memory and only land in the real VFS if the run finishes without raising, so a script that writes then crashes leaves nothing behind. Scoped to that one flat directory: a script that `os.mkdir()`s a subdirectory has that silently excluded, with a note saying so. It composes with pipes and redirection like any other command, and `Ctrl+C` terminates the worker outright — a `while True: pass` is actually killable, and the UI keeps painting the whole time. The ~13 MB runtime is served from our own origin (the CSP allows no CDN scripts) and is fetched lazily on first use, for signed-in accounts only.
 - **Editor / CDE** — write a TSX applet and hit **Launch**: it compiles in-browser (Sucrase) and mounts live in its own window, inside a closed shadow root with a restricted kernel proxy.
 - **Multi-Agent Workspace** — ask one question and get four specialist personas answering side by side, each on its own model.
 - **Monitors** — a live bus traffic sniffer, an agent activity monitor (requests, streamed chars, round-trip latency, tool calls, errors), and system metrics read from real browser and app state.
-- **Mobile** — full-screen single-app layout with bottom nav below 768px; drag/resize use Pointer Events so touch works.
+- **Mobile** — full-screen single-app layout with bottom nav below 768px; drag/resize use Pointer Events so touch works; phone detection is orientation-aware rather than a raw width check.
 - **Preferences** — theme, reduce-motion, terminal font size, default persona, boot sequence, and an analytics opt-out, all persisted locally and synced across tabs.
 
 ## What was cut, and why
@@ -73,11 +74,16 @@ The `render` terminal command needs enough function budget for a Chromium cold s
 
 ```
 App.tsx, store.ts, types.ts       Kernos shell — windows, desktop, taskbar, mobile layout
-apps/                             Window contents: Terminal, AIChat, LocalModel, Editor, FileSystem, CDE, monitors, ...
+apps/                             Window contents: Terminal, AIChat, Classifier, LocalModel, Editor, FileSystem, CDE, monitors, ...
 components/                       Boot sequence, window chrome, login, terms gate, tours
 services/kernel.ts                Client-side pub/sub bus + fetch adapter to /api/*
 lib/agents.ts                     The six agent personas (prompts + per-persona model routing)
-lib/localModel.ts                 BNLM engine wrapper — init/train/generate/score/export/save/load
+lib/localClassifier.ts            The intent-classifier engine — init/train/predict/explain/evaluate
+lib/classifierRegistry.ts         Named save/load for trained classifiers (IndexedDB)
+lib/terminalIntel.ts              classify/explain/correct/train --from-corrections + trace
+lib/terminalCapabilities.ts       The Capability vocabulary + can/policy dispatch-table introspection
+lib/vfsOverlay.ts                 Commit-on-success staging layer, shared by kernos.exec and Python write-back
+lib/localModel.ts                 BNLM (generative) engine wrapper — init/train/generate/score/export/save/load
 lib/appletCompiler.ts             In-browser TSX→JS (Sucrase), shared by applets and kernos.exec
 lib/kernosExec.ts                 Sandboxed executor for agent-written TypeScript
 lib/kernosTools.ts                Tool dispatch (bnlm.* and kernos.exec)
@@ -91,15 +97,18 @@ lib/python.worker.ts              CPython on a worker; stdout/stderr capture, VF
 lib/networkCommands.ts            Native curl/dig/ping
 lib/networkGuard.ts               SSRF protection for outbound requests
 src/bnlm/                         The vendored BNLM engine (tensor/model/tokenizer/optimizer/workers)
+public/manifest.webmanifest, sw.js  PWA manifest + a same-origin-only, COEP-safe service worker
 supabase/schema.sql               Tables + RLS policies
 api/chat.ts                       Groq streaming proxy (Edge function)
 api/exec.ts                       Ephemeral sandboxed command exec (Node function)
 api/browser-render.ts             Headless Chromium page render (Node function)
 api/guest-usage.ts                Guest daily-quota accounting (Node function)
+docs/OE.md                        The living map of what's shipped, next, and rejected
 ```
 
 ## Further reading
 
+- [docs/OE.md](./docs/OE.md) — the living map: what's actually shipped, what's explicitly next, what's deliberately rejected (with the measurements behind those calls, not just opinions), and a checklist for what "done" means
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — the actual current stack, and the map from the original Go-backed design
 - [SECURITY.md](./SECURITY.md) — threat model, what's defended, and the known holes stated plainly
 - [KERNOS_101.md](./KERNOS_101.md) — a from-scratch walkthrough of using the app
