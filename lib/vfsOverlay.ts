@@ -15,9 +15,10 @@
 // code running inside one invocation sees its own writes immediately
 // (read-your-writes) without those writes being durable yet.
 //
-// Scoped to kernos.exec for now. Python write-back (lib/pythonRuntime.ts)
-// is expected to reuse this same class once it needs the identical
-// property — generalize on the second real consumer, not before.
+// Two consumers today: kernos.exec directly, and the terminal's Python
+// write-back path (lib/terminalFs.ts's writeBackFiles, called from
+// apps/Terminal.tsx) — both stage through this one class rather than each
+// inventing their own commit-or-discard logic.
 
 import { vfs } from './vfs';
 import { FileNode } from '../types';

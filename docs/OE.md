@@ -165,7 +165,9 @@ scheduled:
       the negative result on retrieval
 - [x] Retrain metrics honest (frozen held-out split, taught-item accuracy)
 - [x] PWA installable; mobile import/export works
-- [ ] Docs match code (this table is true — checked 2026‑08‑17)
+- [x] Docs match code (this table is true — checked 2026‑08‑16, full pass:
+      every specific number/name/mechanism in Sections 1, 4, 5, and 6
+      verified against current code and passing tests, not just re-read)
 - [ ] One clear wedge demo recorded, not just runnable
 
 Not required for v1: retrieval, `pip`, Termux, knowledge graphs, NPU
