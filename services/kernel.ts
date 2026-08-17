@@ -226,6 +226,26 @@ class Kernel {
       }
     }
 
+    // The line left in `buffer` after the loop is real, unprocessed data,
+    // not a partial fragment to discard: the server always terminates each
+    // JSON object with '\n', but there's no guarantee that trailing newline
+    // arrives in the same read() as the JSON before it — read() can end
+    // exactly at the object boundary, leaving the last object (sometimes
+    // the sentence-ending chunk itself) parked in `buffer` waiting for a
+    // read() that never comes because the stream just closed. Dropping it
+    // here is what silently truncated replies mid-sentence.
+    if (buffer.trim()) {
+      try {
+        const parsed = JSON.parse(buffer);
+        if (parsed.chunk) {
+          full += parsed.chunk;
+          onChunk(parsed.chunk);
+        } else if (parsed.error) {
+          error = parsed.error;
+        }
+      } catch { /* genuinely incomplete fragment — nothing left to recover */ }
+    }
+
     return { full, error };
   }
 
