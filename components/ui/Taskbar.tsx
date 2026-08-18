@@ -79,6 +79,60 @@ const Clock = () => {
   );
 };
 
+// Window Controls Overlay: desktop-only, and only real once the app is
+// actually installed with display_override: window-controls-overlay
+// honored (see public/manifest.webmanifest) — a normal browser tab, and
+// most installed contexts before the user's browser/OS supports this,
+// report navigator.windowControlsOverlay as undefined or .visible: false,
+// and this hook (and the component below reading it) is inert either way.
+// Not verifiable from this sandboxed browser session — WCO can only ever
+// activate for a real, actually-installed standalone window, which this
+// automated environment has no way to become. Written to be checked by
+// actually installing the app.
+function useWindowControlsOverlay() {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const wco = (navigator as any).windowControlsOverlay;
+    if (!wco) return;
+    const update = () => setVisible(wco.visible);
+    update();
+    wco.addEventListener('geometrychange', update);
+    return () => wco.removeEventListener('geometrychange', update);
+  }, []);
+  return visible;
+}
+
+// Draws Kernos's own top strip into the OS title bar's space instead of
+// leaving it blank behind the window controls — the whole point of
+// declaring window-controls-overlay rather than just standalone. Sized
+// and positioned via the titlebar-area-* env vars the browser exposes
+// only while WCO is actually active, which already account for which
+// side the OS drew its own minimize/maximize/close controls on (right on
+// Windows/Linux, left on macOS) — hardcoding either side here would put
+// this strip's content under those buttons on the other platform.
+// -webkit-app-region: drag makes the strip itself move the window like a
+// native title bar; interactive children need the no-drag override below
+// or they'd become part of the drag surface instead of clickable.
+const TitleBarOverlay: React.FC = () => {
+  const visible = useWindowControlsOverlay();
+  if (!visible) return null;
+  return (
+    <div
+      className="fixed z-[9999] flex items-center px-3 gap-2 bg-[var(--kernos-bg-taskbar)] border-b border-white/5 select-none"
+      style={{
+        top: 'env(titlebar-area-y, 0)',
+        left: 'env(titlebar-area-x, 0)',
+        width: 'env(titlebar-area-width, 100%)',
+        height: 'env(titlebar-area-height, 33px)',
+        WebkitAppRegion: 'drag',
+      } as React.CSSProperties}
+    >
+      <span className="text-[11px] font-bold tracking-widest text-gray-300">KERNOS</span>
+      <div className="w-1 h-1 rounded-full bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.8)]" />
+    </div>
+  );
+};
+
 /* Tooltip wrapper — shows label on hover */
 const TipButton: React.FC<{ label: string; onClick: () => void; onContextMenu?: (e: React.MouseEvent) => void; className?: string; children: React.ReactNode }> = ({ label, onClick, onContextMenu, className, children }) => (
   <div className="relative group flex items-center justify-center">
@@ -301,7 +355,9 @@ export const Taskbar: React.FC = () => {
   }
 
   return (
-    <motion.div 
+    <>
+      <TitleBarOverlay />
+      <motion.div
       initial={{ y: 50, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
       transition={{ type: 'spring', damping: 20, stiffness: 200, delay: 0.2 }}
@@ -441,6 +497,7 @@ export const Taskbar: React.FC = () => {
         <GuestUsageChip />
         <Clock />
       </div>
-    </motion.div>
+      </motion.div>
+    </>
   );
 };
