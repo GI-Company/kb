@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { COMMAND_CAPABILITIES, CAPABILITY_INFO } from './terminalCapabilities';
+import { COMMAND_CAPABILITIES, CAPABILITY_INFO, AGENT_TOOL_CAPABILITIES } from './terminalCapabilities';
 // Safe here — this is a test file, never bundled into the client. See the
 // header comment in terminalCapabilities.ts for why the module under test
 // keeps its own literal copies instead of importing these directly.
 import { ALLOWED_COMMANDS, NETWORK_COMMANDS } from '../api/exec';
+import { LOCAL_MODEL_TOOL_NAMES } from './localModelTools';
 
 describe('terminalCapabilities stays in sync with the real gates', () => {
   it('has every real server-sandboxed command, with no extras', () => {
@@ -43,6 +44,36 @@ describe('terminalCapabilities stays in sync with the real gates', () => {
     for (const [cmd, caps] of Object.entries(COMMAND_CAPABILITIES)) {
       for (const cap of caps) {
         expect(CAPABILITY_INFO[cap], `"${cmd}" declares unknown capability "${cap}"`).toBeDefined();
+      }
+    }
+  });
+
+  // `can <tool>` looks AGENT_TOOL_CAPABILITIES up by exact key — a real
+  // tool missing here falls into the same "not a command this shell knows
+  // about" message as a genuine typo, the exact failure mode this table
+  // exists to prevent (see its own header comment).
+  it('has every real bnlm.* tool, with no extras', () => {
+    for (const tool of LOCAL_MODEL_TOOL_NAMES) {
+      expect(AGENT_TOOL_CAPABILITIES[tool], `"${tool}" from LOCAL_MODEL_TOOL_NAMES has no entry`).toBeDefined();
+    }
+    for (const tool of Object.keys(AGENT_TOOL_CAPABILITIES)) {
+      if (tool === 'kernos.exec') continue; // not a bnlm.* tool, exempt from this particular list
+      expect((LOCAL_MODEL_TOOL_NAMES as readonly string[]).includes(tool),
+        `"${tool}" is declared here but is not a real bnlm.* tool`).toBe(true);
+    }
+  });
+
+  // kernos.exec has always been able to call vfs.write/vfs.create (see
+  // lib/kernosExec.ts's handlers.vfs) — this caught that gap going stale
+  // again, not just documents today's fix.
+  it('tags kernos.exec with vfs:write, since it can create/write files', () => {
+    expect(AGENT_TOOL_CAPABILITIES['kernos.exec']).toContain('vfs:write');
+  });
+
+  it('every capability an agent tool declares has a description', () => {
+    for (const [tool, caps] of Object.entries(AGENT_TOOL_CAPABILITIES)) {
+      for (const cap of caps) {
+        expect(CAPABILITY_INFO[cap], `"${tool}" declares unknown capability "${cap}"`).toBeDefined();
       }
     }
   });

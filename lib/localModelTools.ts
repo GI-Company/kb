@@ -35,6 +35,23 @@ export interface ToolRunResult {
   glassBox?: GlassBoxDetail;
 }
 
+/**
+ * Every tool.tool value runLocalModelTool actually handles, in one place —
+ * exported so lib/terminalCapabilities.test.ts can check AGENT_TOOL_CAPABILITIES
+ * against the real list instead of a second, hand-maintained copy that could
+ * silently drift from it. Not consumed by runLocalModelTool itself, which
+ * stays a plain if-chain below; this is documentation with a test attached,
+ * not a second source of truth for dispatch.
+ */
+export const LOCAL_MODEL_TOOL_NAMES = [
+  'bnlm.train',
+  'bnlm.generate',
+  'bnlm.score',
+  'bnlm.buildClassifier',
+  'bnlm.trainClassifier',
+  'bnlm.classify',
+] as const;
+
 export function extractToolCall(text: string): ToolCall | null {
   const match = text.match(/```tool\s*([\s\S]*?)```/);
   if (!match) return null;

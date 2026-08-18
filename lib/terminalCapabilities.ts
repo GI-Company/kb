@@ -131,9 +131,21 @@ export const NL_TRANSLATOR_CAPABILITY: Capability = 'model:cloud';
  * second source of truth for the limits themselves.
  */
 export const AGENT_TOOL_CAPABILITIES: Record<string, Capability[]> = {
-  'kernos.exec': ['vfs', 'model:local', 'model:cloud', 'net'],
+  // vfs:write was missing here despite kernos.exec always having had
+  // vfs.write/vfs.create — caught during a pass auditing this table for
+  // completeness, not a new capability.
+  'kernos.exec': ['vfs', 'vfs:write', 'model:local', 'model:cloud', 'net'],
   'bnlm.train': ['model:local'],
   'bnlm.generate': ['model:local'],
   'bnlm.score': ['model:local'],
   'bnlm.classify': ['model:local'],
+  // Two more real, working tools (see lib/localModelTools.ts) that were
+  // simply never added here — `can bnlm.trainClassifier` fell into the
+  // exact "not a command this shell knows about" message this whole table
+  // exists to avoid, indistinguishable from a genuine typo.
+  'bnlm.trainClassifier': ['model:local'],
+  // Generates its own training data via Groq before training locally —
+  // see lib/datasetGen.ts's generateLabeledExamples — so unlike every
+  // other bnlm.* tool here, this one genuinely spends model:cloud too.
+  'bnlm.buildClassifier': ['model:cloud', 'model:local'],
 };
