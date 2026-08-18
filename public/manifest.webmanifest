@@ -14,5 +14,53 @@
     { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
     { "src": "/icon-192-maskable.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
     { "src": "/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    {
+      "name": "Terminal",
+      "short_name": "Terminal",
+      "description": "Open a real terminal against your persistent files",
+      "url": "/?launch=terminal",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "AI Chat",
+      "short_name": "AI Chat",
+      "description": "Talk to a Groq-backed agent persona",
+      "url": "/?launch=ai-chat",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "CDE",
+      "short_name": "CDE",
+      "description": "Browse and edit your files",
+      "url": "/?launch=cde",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ],
+  "share_target": {
+    "action": "/",
+    "method": "GET",
+    "params": {
+      "title": "share-title",
+      "text": "share-text",
+      "url": "share-url"
+    }
+  },
+  "file_handlers": [
+    {
+      "action": "/",
+      "accept": {
+        "text/plain": [".txt", ".log"],
+        "text/markdown": [".md"],
+        "application/json": [".json"],
+        "text/javascript": [".js", ".jsx", ".mjs"],
+        "text/typescript": [".ts", ".tsx"],
+        "text/x-python": [".py"],
+        "text/csv": [".csv"],
+        "text/html": [".html"],
+        "text/css": [".css"]
+      }
+    }
   ]
 }

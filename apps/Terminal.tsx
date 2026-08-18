@@ -26,11 +26,16 @@ interface Line {
   imageDataUrl?: string; // set for `render <url> --screenshot` results — see the vm.render:image topic below
 }
 
-export const TerminalApp: React.FC = () => {
+interface TerminalProps {
+  /** Pre-fills the prompt without running it — e.g. a shared URL lands here as `wget <url>`, staged for the user to review and press Enter, same as a mutating natural-language translation. See App.tsx's share_target handling. */
+  initialInput?: string;
+}
+
+export const TerminalApp: React.FC<TerminalProps> = ({ initialInput }) => {
   const [lines, setLines] = useState<Line[]>([
     { id: 'init', type: 'output', content: 'Kernos OS [Version 1.0.0]\n(c) 2025 Kernos Foundation. All rights reserved.\n\nType "help" for commands.\nFilesystem commands (ls, cd, cat, mkdir, write...) act on your real files and persist.\nPrefix with "?" for natural language (e.g. ? show large files)\nSigned-in accounts also get python/pip and curl/dig/ping/wget/render — sign in from Settings.\n', time: new Date().toLocaleTimeString() }
   ]);
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState(initialInput || '');
   // Persisted so history survives a reload, like a real shell's.
   // historyIndex === null means "typing a fresh line".
   const [history, setHistory] = useState<string[]>(() => {

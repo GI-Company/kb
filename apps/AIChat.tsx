@@ -138,9 +138,14 @@ const GlassBoxPanel: React.FC<{ detail: GlassBoxDetail }> = ({ detail }) => {
     );
 };
 
-export const AIChatApp: React.FC = () => {
+interface AIChatProps {
+  /** Pre-fills the composer without sending it — e.g. shared text from the OS share sheet lands here for the user to review and send. See App.tsx's share_target handling. */
+  initialInput?: string;
+}
+
+export const AIChatApp: React.FC<AIChatProps> = ({ initialInput }) => {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
-    const [input, setInput] = useState('');
+    const [input, setInput] = useState(initialInput || '');
     const [agents, setAgents] = useState<AgentInfo[]>([]);
     const agentsRef = useRef<AgentInfo[]>([]);
     const [selectedAgent, setSelectedAgent] = useState<string>('');

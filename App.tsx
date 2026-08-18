@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useOS } from './store';
+import { WindowState } from './types';
 import { Taskbar } from './components/ui/Taskbar';
 import { Window } from './components/ui/Window';
 import { TerminalApp } from './apps/Terminal';
@@ -33,13 +34,20 @@ import { AppUser, getSession, createGuestUser } from './lib/auth';
 import { identifyUser } from './lib/analytics';
 import { startGuestUsageTracking, GUEST_LIMIT_MESSAGE_KEY } from './lib/guestUsage';
 import { ensurePersistentStorage } from './lib/storagePersistence';
+import { importLaunchedFile } from './lib/fileHandlerImport';
 import { getSetting } from './lib/settings';
 import { AnimatePresence } from 'framer-motion';
 
 type BootPhase = 'boot' | 'bios' | 'login' | 'desktop';
 
+// public/manifest.webmanifest's `shortcuts` array links here as
+// ?launch=<appId> — validated against this fixed allowlist before ever
+// reaching openWindow, since the query string is attacker-influenceable
+// (a crafted link) in a way a literal call site isn't.
+const LAUNCH_SHORTCUT_APPS = new Set<WindowState['appId']>(['terminal', 'ai-chat', 'cde']);
+
 const App: React.FC = () => {
-  const { windows, liteMode, openWalkthrough, setGuestUsage } = useOS();
+  const { windows, liteMode, openWalkthrough, setGuestUsage, openWindow } = useOS();
   const [phase, setPhase] = useState<BootPhase>('boot');
   const [bootLines, setBootLines] = useState<string[]>([]);
   const [user, setUser] = useState<AppUser | null>(null);
@@ -95,6 +103,67 @@ const App: React.FC = () => {
     if (phase !== 'desktop') return;
     ensurePersistentStorage();
   }, [phase]);
+
+  // Installed-icon shortcuts land here as ?launch=<appId> — the OS opens a
+  // normal navigation to this URL, there's no separate API to consume.
+  useEffect(() => {
+    if (phase !== 'desktop') return;
+    const params = new URLSearchParams(window.location.search);
+    const launch = params.get('launch');
+    if (launch && LAUNCH_SHORTCUT_APPS.has(launch as WindowState['appId'])) {
+      openWindow(launch as WindowState['appId']);
+    }
+    if (params.has('launch')) {
+      // Consumed once — left in place, a reload (or the update-available
+      // chip's reload) would silently reopen the same window every time.
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, [phase]);
+
+  // public/manifest.webmanifest's `share_target` — the OS share sheet
+  // lands here as a GET navigation with share-title/share-text/share-url
+  // query params (text/url only for now; sharing a file needs POST +
+  // multipart through the service worker, a bigger slice than this one).
+  // A shared URL is staged as `wget <url>` in the Terminal's input rather
+  // than run automatically — same rule MUTATING_COMMANDS already applies
+  // to a natural-language-translated download: content shared in from
+  // outside the app is exactly the kind of input a human should confirm
+  // before it reaches the network. Shared text with no URL goes to AI
+  // Chat's composer instead, also unsent until the user reviews it.
+  useEffect(() => {
+    if (phase !== 'desktop') return;
+    const params = new URLSearchParams(window.location.search);
+    const sharedUrl = params.get('share-url');
+    const sharedText = params.get('share-text');
+    if (sharedUrl) {
+      openWindow('terminal', undefined, { initialInput: `wget ${sharedUrl}` });
+    } else if (sharedText) {
+      openWindow('ai-chat', undefined, { initialInput: sharedText });
+    }
+    if (params.has('share-url') || params.has('share-text') || params.has('share-title')) {
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, [phase]);
+
+  // public/manifest.webmanifest's `file_handlers` — an OS "Open with
+  // Kernos" on a real file delivers it here as a FileSystemFileHandle via
+  // the Launch Handler API, not a URL. Chromium-only; feature-detected,
+  // no-ops elsewhere. Each file is imported into the VFS root (there's no
+  // "current directory" to place it in outside a terminal session) and
+  // opened in its own Editor window.
+  useEffect(() => {
+    if (phase !== 'desktop' || !user || !('launchQueue' in window)) return;
+    (window as any).launchQueue.setConsumer(async (launchParams: { files: FileSystemFileHandle[] }) => {
+      for (const handle of launchParams.files || []) {
+        try {
+          const { name, fileId } = await importLaunchedFile(handle, user.id);
+          openWindow('editor', name, { fileId });
+        } catch (err: any) {
+          console.warn('Failed to import a launched file:', err?.message || err);
+        }
+      }
+    });
+  }, [phase, user]);
 
   // 15-min/day/IP guest quota (see api/guest-usage.ts). Real accounts are
   // never subject to this — only starts tracking while the current user is
@@ -173,12 +242,12 @@ const App: React.FC = () => {
 
   const getAppContent = (appId: string, data?: any) => {
     switch (appId) {
-      case 'terminal': return <TerminalApp />;
+      case 'terminal': return <TerminalApp {...data} />;
       case 'editor': return <EditorApp {...data} />;
       case 'monitor': return <MonitorApp />;
       case 'files': return <FileSystemApp />;
       case 'tasks': return <TaskRunnerApp />;
-      case 'ai-chat': return <AIChatApp />;
+      case 'ai-chat': return <AIChatApp {...data} />;
       case 'agents': return <AgentMonitorApp />;
       case 'local-model': return <LocalModelApp />;
       case 'classifier': return <ClassifierApp />;
