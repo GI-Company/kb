@@ -6,21 +6,26 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // in-memory tree that behaves the same way: id-keyed nodes, children
 // resolved by parent, 'home' as the root sentinel.
 
-interface Node { id: string; name: string; type: 'file' | 'directory'; content: string; parentId: string }
+interface Node { id: string; name: string; type: 'file' | 'directory'; content: string; parentId: string; encoding?: 'base64' }
 let nodes: Record<string, Node> = {};
 let seq = 0;
 
 vi.mock('./vfs', () => ({
   vfs: {
     list: async (parentId: string) =>
-      Object.values(nodes).filter(n => n.parentId === parentId).map(n => ({ id: n.id, name: n.name, type: n.type })),
+      Object.values(nodes).filter(n => n.parentId === parentId).map(n => ({ id: n.id, name: n.name, type: n.type, encoding: n.encoding })),
     read: async (id: string) => nodes[id]?.content ?? '',
     exists: async (id: string) => !!nodes[id],
-    write: async (id: string, content: string) => { if (nodes[id]) nodes[id].content = content; return true; },
-    create: async (parentId: string, name: string, type: 'file' | 'directory', _u: string, content = '') => {
+    write: async (id: string, content: string, _u?: string, encoding?: 'base64') => {
+      if (!nodes[id]) return false;
+      nodes[id].content = content;
+      nodes[id].encoding = encoding;
+      return true;
+    },
+    create: async (parentId: string, name: string, type: 'file' | 'directory', _u: string, content = '', _mountSource?: string, encoding?: 'base64') => {
       const id = `n${++seq}`;
-      nodes[id] = { id, name, type, content, parentId };
-      return { id, name, type };
+      nodes[id] = { id, name, type, content, parentId, encoding };
+      return { id, name, type, encoding };
     },
     remove: async (id: string) => {
       // Cascade, so `rm -r` on a directory removes what's inside it too.
@@ -35,7 +40,7 @@ vi.mock('./vfs', () => ({
   },
 }));
 
-import { runFsCommand, cwdPath, ROOT_CWD, Cwd, writeBackFiles } from './terminalFs';
+import { runFsCommand, cwdPath, ROOT_CWD, Cwd, writeBackFiles, saveDownload } from './terminalFs';
 
 const USER = 'guest';
 
@@ -250,5 +255,74 @@ describe('writeBackFiles — the Python write-back bridge', () => {
     const { written } = await writeBackFiles(ROOT_CWD, USER, original, finalState);
     expect(written.sort()).toEqual(['a.txt', 'c.txt']);
     expect(nodes['existing-a'].content).toBe('new-a');
+  });
+});
+
+// The client-side half of curl -O/-o and wget — the server that fetched
+// the bytes has no VFS to write into (see networkCommands.ts's
+// CommandResult.download doc comment), so this is where a download
+// actually lands, called from Terminal.tsx once the bytes arrive.
+describe('saveDownload — the curl -O/wget write-back bridge', () => {
+  beforeEach(() => { nodes = {}; seq = 0; });
+
+  it('creates a brand new file with base64 encoding set', async () => {
+    const result = await saveDownload(ROOT_CWD, USER, 'logo.png', 'iVBORw0KGgo=');
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('logo.png');
+    const created = Object.values(nodes).find(n => n.name === 'logo.png');
+    expect(created?.content).toBe('iVBORw0KGgo=');
+    expect(created?.encoding).toBe('base64');
+  });
+
+  it('overwrites an existing file, replacing content and setting encoding', async () => {
+    nodes['existing'] = { id: 'existing', name: 'logo.png', type: 'file', content: 'old-text', parentId: 'home' };
+    const result = await saveDownload(ROOT_CWD, USER, 'logo.png', 'bmV3Ynl0ZXM=');
+    expect(result.code).toBe(0);
+    expect(nodes['existing'].content).toBe('bmV3Ynl0ZXM=');
+    expect(nodes['existing'].encoding).toBe('base64');
+  });
+
+  it('refuses to clobber an existing directory of the same name', async () => {
+    nodes['existing-dir'] = { id: 'existing-dir', name: 'assets', type: 'directory', content: '', parentId: 'home' };
+    const result = await saveDownload(ROOT_CWD, USER, 'assets', 'AAAA');
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('Is a directory');
+    expect(nodes['existing-dir'].type).toBe('directory');
+  });
+
+  it('resolves relative to the given cwd, not always the root', async () => {
+    await sh('mkdir downloads');
+    const { cwd } = await sh('cd downloads');
+    const result = await saveDownload(cwd, USER, 'file.bin', 'AQID');
+    expect(result.code).toBe(0);
+    const created = Object.values(nodes).find(n => n.name === 'file.bin');
+    expect(created?.parentId).toBe(Object.values(nodes).find(n => n.name === 'downloads')?.id);
+  });
+
+  it('errors clearly when the parent directory does not exist', async () => {
+    const result = await saveDownload(ROOT_CWD, USER, 'nope/file.bin', 'AQID');
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('No such file or directory');
+  });
+});
+
+// cat on a binary (base64-encoded) file used to dump raw base64 text —
+// unreadable garbage, and actively misleading since it looked like it
+// might be the real file content.
+describe('cat on a binary file', () => {
+  beforeEach(() => { nodes = {}; seq = 0; });
+
+  it('shows a size summary instead of raw base64', async () => {
+    nodes['bin'] = { id: 'bin', name: 'logo.png', type: 'file', content: 'AQIDBAU=', parentId: 'home', encoding: 'base64' };
+    const { result } = await sh('cat logo.png');
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('binary file');
+    expect(result.stdout).not.toContain('AQIDBAU=');
+  });
+
+  it('still shows real content for a plain-text file (no regression)', async () => {
+    nodes['txt'] = { id: 'txt', name: 'notes.md', type: 'file', content: 'hello', parentId: 'home' };
+    const { result } = await sh('cat notes.md');
+    expect(result.stdout).toBe('hello\n');
   });
 });

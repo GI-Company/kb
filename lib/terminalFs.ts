@@ -50,6 +50,12 @@ function endWithNewline(text: string): string {
   return text === '' || text.endsWith('\n') ? text : text + '\n';
 }
 
+/** Decoded byte length of a base64 string, without pulling in Node's Buffer (this file runs client-side, in the browser, not just server-side). */
+function base64ByteLength(b64: string): number {
+  const padding = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0;
+  return Math.floor((b64.length * 3) / 4) - padding;
+}
+
 function ok(stdout = ''): CommandResult {
   return { stdout, stderr: '', code: 0 };
 }
@@ -86,7 +92,7 @@ export async function resolveDir(cwd: Cwd, path: string, userId: string): Promis
 }
 
 /** Splits a path into its parent directory and final component. */
-async function resolveParent(
+export async function resolveParent(
   cwd: Cwd,
   path: string,
   userId: string
@@ -205,6 +211,13 @@ export async function runFsCommand(
       if (typeof found === 'string') return keep(err('cat', found));
       if (found.node.type === 'directory') return keep(err('cat', `${positional[0]}: Is a directory`));
       const content = await vfs.read(found.node.id, userId);
+      // Binary content (curl -O/wget downloads) is stored as base64 text —
+      // dumping that raw would just be garbage on the terminal, so a size
+      // summary stands in for it instead, same as a real shell refusing to
+      // cat a binary to a tty.
+      if (found.node.encoding === 'base64') {
+        return keep(ok(`${positional[0]}: binary file, ${(base64ByteLength(content) / 1024).toFixed(1)} KB\n`));
+      }
       return keep(ok(content.endsWith('\n') || content === '' ? content : content + '\n'));
     }
 
@@ -313,6 +326,40 @@ export async function runFsCommand(
     default:
       return keep(err(command, 'not a filesystem command'));
   }
+}
+
+/**
+ * Writes curl -O/-o's or wget's downloaded bytes into the VFS at `name`,
+ * resolved against `cwd` exactly like `write` resolves its target — the
+ * client-side half of the download-to-VFS bridge. The server that actually
+ * fetched the bytes (lib/networkCommands.ts) has no VFS to write into at
+ * all (see its CommandResult.download doc comment), so this is where a
+ * curl -O/wget invocation actually lands in the user's files, called from
+ * Terminal.tsx's vm.exec:download handler once the bytes arrive.
+ *
+ * Same collision behavior as `write`: overwrites an existing file, refuses
+ * to clobber a directory.
+ */
+export async function saveDownload(
+  cwd: Cwd,
+  userId: string,
+  name: string,
+  contentBase64: string
+): Promise<CommandResult> {
+  const resolved = await resolveParent(cwd, name, userId);
+  if (typeof resolved === 'string') return err('download', resolved);
+  if (!resolved.name) return err('download', `${name}: No such file or directory`);
+
+  const existing = await vfs.list(dirId(resolved.parent), userId);
+  const match = existing.find(c => c.name === resolved.name);
+  if (match) {
+    if (match.type === 'directory') return err('download', `${name}: Is a directory`);
+    const wrote = await vfs.write(match.id, contentBase64, userId, 'base64');
+    if (!wrote) return err('download', `${name}: failed to write`);
+  } else {
+    await vfs.create(dirId(resolved.parent), resolved.name, 'file', userId, contentBase64, undefined, 'base64');
+  }
+  return ok(`wrote "${name}" (${(base64ByteLength(contentBase64) / 1024).toFixed(1)} KB)\n`);
 }
 
 /**

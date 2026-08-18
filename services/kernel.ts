@@ -276,6 +276,14 @@ class Kernel {
       if (data.stderr) {
         this.broadcast({ topic: 'vm.stderr', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, text: data.stderr }, time: now() });
       }
+      // curl -O/-o and wget's saved-file bytes — see lib/networkCommands.ts's
+      // CommandResult.download doc comment for why this can't be written
+      // server-side. Broadcast as its own topic, same pattern vm.render:image
+      // uses below, so Terminal.tsx (which already owns cwd/userId) can
+      // perform the actual vfs.create/vfs.write.
+      if (data.download) {
+        this.broadcast({ topic: 'vm.exec:download', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, ...data.download }, time: now() });
+      }
       this.broadcast({ topic: 'vm.exit', from: 'kernel', to: this.clientId, payload: { _request_id: payload._request_id, code: data.code ?? 0 }, time: now() });
     } catch (err: any) {
       // A cancel already reported itself; re-reporting it as a failure to

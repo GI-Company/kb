@@ -53,7 +53,10 @@ const SANDBOXED_EXEC_COMMANDS = new Set([
 ]);
 
 /** Copied from api/exec.ts's NETWORK_COMMANDS — same caveat as above. */
-const NETWORK_EXEC_COMMANDS = new Set(['curl', 'dig', 'nslookup', 'ping']);
+const NETWORK_EXEC_COMMANDS = new Set(['curl', 'dig', 'nslookup', 'ping', 'wget']);
+
+/** curl -O/-o and wget write their downloaded bytes into the VFS (see lib/networkCommands.ts) — ping/dig/nslookup don't touch it at all. */
+const NETWORK_WRITE_COMMANDS = new Set(['curl', 'wget']);
 
 const VFS_WRITE_COMMANDS = new Set(['mkdir', 'touch', 'rm', 'mv', 'cp', 'write']);
 
@@ -93,7 +96,7 @@ for (const cmd of TRAINING_COMMANDS) {
   COMMAND_CAPABILITIES[cmd] = cmd === 'correct' ? ['model:local', 'vfs:write'] : ['model:local', 'vfs'];
 }
 for (const cmd of NETWORK_EXEC_COMMANDS) {
-  COMMAND_CAPABILITIES[cmd] = ['net'];
+  COMMAND_CAPABILITIES[cmd] = NETWORK_WRITE_COMMANDS.has(cmd) ? ['net', 'vfs:write'] : ['net'];
 }
 COMMAND_CAPABILITIES['render'] = ['net'];
 for (const cmd of SANDBOXED_EXEC_COMMANDS) {

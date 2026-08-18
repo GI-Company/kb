@@ -19,10 +19,18 @@ export interface CommandResult {
   stdout: string;
   stderr: string;
   code: number;
+  /** Set by curl -O/-o and wget instead of putting the body in stdout — the terminal has no server-side VFS to write into, so this rides back to the client (see services/kernel.ts's handleExec), which does the actual vfs.create/vfs.write with the cwd/userId it already has. */
+  download?: { name: string; contentBase64: string; encoding: 'base64' };
 }
 
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_BODY_BYTES = 100_000;
+// Separate, much larger cap for curl -O/-o/wget's saved-to-file path — the
+// existing MAX_BODY_BYTES is sized for text printed at a prompt, not a real
+// asset. 2MB stays safely inside a serverless function's memory/duration
+// budget and a guest's realistic localStorage quota once base64-inflated
+// (~33%) — a deliberate v1 boundary, not a technical ceiling.
+const MAX_DOWNLOAD_BYTES = 2_000_000;
 const MAX_REDIRECTS = 5;
 
 /** Just enough of the Fetch API's Response shape for runCurl below — real headers/status/body, backed by a pinned Node http(s) request instead of fetch(). */
@@ -31,6 +39,8 @@ interface PinnedResponse {
   statusText: string;
   headers: Headers;
   text(): Promise<string>;
+  /** Raw bytes, undecoded — text() runs the body through UTF-8, which would corrupt binary content (an image, say). Downloads need this instead. */
+  buffer(): Promise<Buffer>;
 }
 
 function toWebHeaders(nodeHeaders: NodeJS.Dict<string | string[]>): Headers {
@@ -54,7 +64,7 @@ function toWebHeaders(nodeHeaders: NodeJS.Dict<string | string[]>): Headers {
  * just refusing to let it (or anything on the path to it) pick where the
  * socket actually lands.
  */
-function pinnedRequest(url: URL, method: string, pinned: ValidatedAddress): Promise<PinnedResponse> {
+function pinnedRequest(url: URL, method: string, pinned: ValidatedAddress, maxBytes?: number): Promise<PinnedResponse> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const settle = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
@@ -78,12 +88,27 @@ function pinnedRequest(url: URL, method: string, pinned: ValidatedAddress): Prom
       },
     } as any, (res: IncomingMessage) => {
       const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      let received = 0;
+      res.on('data', (chunk: Buffer) => {
+        received += chunk.length;
+        // Checked as bytes arrive, not after the fact — a caller with a
+        // maxBytes cap (curl -O/-o, wget) would otherwise still pay to
+        // buffer an unbounded response in full before a post-hoc slice
+        // ever ran, defeating the point of the cap for a slow, huge, or
+        // malicious response.
+        if (maxBytes !== undefined && received > maxBytes) {
+          settle(() => reject(new Error(`response exceeded the ${(maxBytes / 1_000_000).toFixed(1)}MB download limit`)));
+          req.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
       res.on('end', () => settle(() => resolve({
         status: res.statusCode ?? 0,
         statusText: res.statusMessage ?? '',
         headers: toWebHeaders(res.headers),
         text: async () => Buffer.concat(chunks).toString('utf-8'),
+        buffer: async () => Buffer.concat(chunks),
       })));
       res.on('error', (err) => settle(() => reject(err)));
     });
@@ -102,11 +127,11 @@ function pinnedRequest(url: URL, method: string, pinned: ValidatedAddress): Prom
 }
 
 /** Like fetch(), but resolves and validates each hop's host itself, then pins the connection to that exact address — redirect: 'follow' would connect first and only let us inspect the result after the fact, which is too late, and a plain fetch() to a validated hostname re-resolves independently at connect time regardless. */
-async function guardedFetch(initialUrl: URL, method: string): Promise<PinnedResponse> {
+async function guardedFetch(initialUrl: URL, method: string, maxBytes?: number): Promise<PinnedResponse> {
   let current = initialUrl;
   for (let i = 0; i <= MAX_REDIRECTS; i++) {
     const pinned = await resolvePinnedAddress(current.hostname);
-    const res = await pinnedRequest(current, method, pinned);
+    const res = await pinnedRequest(current, method, pinned, maxBytes);
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location');
       if (!location) return res;
@@ -128,9 +153,10 @@ async function guardedFetch(initialUrl: URL, method: string): Promise<PinnedResp
  * to type instead — which is the only thing they actually needed.
  */
 export const NETWORK_USAGE: Record<string, string> = {
-  curl: 'Usage: curl <url>          e.g. curl https://example.com',
+  curl: 'Usage: curl <url> [-O | -o <path>]   e.g. curl -O https://example.com/logo.png',
   dig: 'Usage: dig <hostname>      e.g. dig example.com',
   ping: 'Usage: ping <hostname>     e.g. ping example.com',
+  wget: 'Usage: wget <url> [-O <path>]        e.g. wget https://example.com/logo.png',
 };
 
 /** Appends the usage line so every failure is actionable, not just descriptive. */
@@ -143,8 +169,62 @@ function fail(command: keyof typeof NETWORK_USAGE | string, message: string, cod
   };
 }
 
+/**
+ * Fetches `parsed` in full and hands back its bytes as a CommandResult.download
+ * for the client to actually write into the VFS — see the CommandResult.download
+ * doc comment for why this can't just write the file itself. Shared by curl
+ * -O/-o and wget, which only differ in how `name` gets picked and which
+ * command name appears in error text.
+ *
+ * A non-2xx response is refused rather than saved: real curl -O saves the
+ * error page by default under the requested name, which is fine for a
+ * throwaway shell but not for silently dropping an HTML 404 page into a
+ * user's own persistent workspace under a name they expected to be real
+ * content.
+ */
+async function fetchForDownload(command: 'curl' | 'wget', parsed: URL, name: string): Promise<CommandResult> {
+  try {
+    const res = await guardedFetch(parsed, 'GET', MAX_DOWNLOAD_BYTES);
+    if (res.status < 200 || res.status >= 300) {
+      return { stdout: '', stderr: `${command}: server responded ${res.status} ${res.statusText || ''} — nothing saved\n`, code: 22 };
+    }
+    const bytes = await res.buffer();
+    const kb = (bytes.length / 1024).toFixed(1);
+    return {
+      // Not "Saved" — the bytes are on their way to the client for the
+      // actual VFS write (see CommandResult.download's doc comment), which
+      // can still fail (a name collision with a directory, say). The
+      // client's own write confirms or reports that outcome separately.
+      stdout: `Downloaded ${kb} KB — writing "${name}" to your files...\n`,
+      stderr: '',
+      code: 0,
+      download: { name, contentBase64: bytes.toString('base64'), encoding: 'base64' },
+    };
+  } catch (err: any) {
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+      return { stdout: '', stderr: `${command}: request timed out after ${FETCH_TIMEOUT_MS / 1000}s\n`, code: 28 };
+    }
+    return { stdout: '', stderr: `${command}: ${err?.message || err}\n`, code: 1 };
+  }
+}
+
+/** The basename curl -O / bare wget saves as when no explicit path is given — the URL's own last path segment, matching real curl's -O naming. */
+function remoteBasename(parsed: URL): string | undefined {
+  return decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() ?? '') || undefined;
+}
+
 export async function runCurl(args: string[]): Promise<CommandResult> {
-  const urlArg = args.find(a => !a.startsWith('-'));
+  const oIndex = args.findIndex(a => a === '-o' || a === '--output');
+  const outputPath = oIndex !== -1 ? args[oIndex + 1] : undefined;
+  if (oIndex !== -1 && !outputPath) return fail('curl', '-o requires a path argument');
+
+  // args[oIndex + 1] is -o's own value, not a second positional — excluded
+  // here so it can't be mistaken for the URL (`curl -o logo.png <url>`
+  // would otherwise resolve "logo.png" as the URL instead). Gated on
+  // oIndex !== -1: when there's no -o at all, oIndex is -1 and oIndex + 1
+  // is 0 — without this gate that would wrongly exclude index 0, exactly
+  // where a bare `curl <url>` puts its only argument.
+  const urlArg = args.find((a, i) => !a.startsWith('-') && !(oIndex !== -1 && i === oIndex + 1));
   if (!urlArg) return fail('curl', 'no URL provided');
 
   let parsed: URL;
@@ -155,6 +235,15 @@ export async function runCurl(args: string[]): Promise<CommandResult> {
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     return fail('curl', `protocol "${parsed.protocol}" is not allowed — only http and https`);
+  }
+
+  const saveAsRemoteName = args.includes('-O') || args.includes('--remote-name');
+  if (outputPath || saveAsRemoteName) {
+    const name = outputPath || remoteBasename(parsed);
+    if (!name) {
+      return fail('curl', `remote file name has no length — "${urlArg}" has no path segment to name it after; use -o <path> instead`);
+    }
+    return fetchForDownload('curl', parsed, name);
   }
 
   const headOnly = args.includes('-I') || args.includes('--head');
@@ -179,6 +268,37 @@ export async function runCurl(args: string[]): Promise<CommandResult> {
     }
     return { stdout: '', stderr: `curl: ${err?.message || err}\n`, code: 1 };
   }
+}
+
+/**
+ * wget <url> [-O <path>] — a thin alias over curl's download path. Bare
+ * `wget <url>` behaves like `curl -O <url>` (name from the URL); `wget -O
+ * <path> <url>` behaves like `curl -o <path> <url>` — matches real wget's
+ * own `-O` meaning "save as this exact path", the opposite of curl's `-O`.
+ */
+export async function runWget(args: string[]): Promise<CommandResult> {
+  const oIndex = args.findIndex(a => a === '-O' || a === '--output-document');
+  const outputPath = oIndex !== -1 ? args[oIndex + 1] : undefined;
+  if (oIndex !== -1 && !outputPath) return fail('wget', '-O requires a path argument');
+
+  const urlArg = args.find((a, i) => !a.startsWith('-') && !(oIndex !== -1 && i === oIndex + 1));
+  if (!urlArg) return fail('wget', 'no URL provided');
+
+  let parsed: URL;
+  try {
+    parsed = new URL(urlArg);
+  } catch {
+    return fail('wget', `invalid URL "${urlArg}" — include the scheme, like https://`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return fail('wget', `protocol "${parsed.protocol}" is not allowed — only http and https`);
+  }
+
+  const name = outputPath || remoteBasename(parsed);
+  if (!name) {
+    return fail('wget', `remote file name has no length — "${urlArg}" has no path segment to name it after; use -O <path> instead`);
+  }
+  return fetchForDownload('wget', parsed, name);
 }
 
 export async function runDig(args: string[]): Promise<CommandResult> {

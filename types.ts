@@ -40,6 +40,8 @@ export interface FileNode {
   name: string;
   type: 'file' | 'directory';
   content?: string;
+  /** Absent means content is plain utf8 text (the original, still-default shape). 'base64' means content is base64-encoded binary — set by curl -O/wget so a downloaded image or other binary asset round-trips byte-for-byte instead of being mangled as text. */
+  encoding?: 'base64';
   children?: string[]; // IDs of children
   parentId?: string | null;
   mountSource?: string; // If present, this folder is a mount point for a remote backend

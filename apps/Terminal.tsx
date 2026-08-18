@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { kernel } from '../services/kernel';
 import { Envelope } from '../types';
-import { VFS_COMMANDS, runFsCommand, cwdPath, ROOT_CWD, Cwd, CommandResult, completePath, commonPrefix, readDirFiles, writeBackFiles } from '../lib/terminalFs';
+import { VFS_COMMANDS, runFsCommand, cwdPath, ROOT_CWD, Cwd, CommandResult, completePath, commonPrefix, readDirFiles, writeBackFiles, saveDownload } from '../lib/terminalFs';
 import { hasPipelineSyntax, parseLine, runPipeline, PIPE_AWARE_COMMANDS, TEXT_FILTERS, tokenize } from '../lib/terminalPipeline';
 import { getCurrentUserId } from '../lib/auth';
 // Imported for its types and the small gate/usage constants only — the
@@ -16,7 +16,7 @@ import { META_COMMANDS, runMetaCommand } from '../lib/terminalMeta';
  * these is staged for confirmation rather than executed — see the
  * sys.terminal.intent:ack handler.
  */
-const MUTATING_COMMANDS = new Set(['rm', 'mv', 'cp', 'write', 'mkdir', 'touch']);
+const MUTATING_COMMANDS = new Set(['rm', 'mv', 'cp', 'write', 'mkdir', 'touch', 'curl', 'wget']);
 
 interface Line {
   id: string;
@@ -28,7 +28,7 @@ interface Line {
 
 export const TerminalApp: React.FC = () => {
   const [lines, setLines] = useState<Line[]>([
-    { id: 'init', type: 'output', content: 'Kernos OS [Version 1.0.0]\n(c) 2025 Kernos Foundation. All rights reserved.\n\nType "help" for commands.\nFilesystem commands (ls, cd, cat, mkdir, write...) act on your real files and persist.\nPrefix with "?" for natural language (e.g. ? show large files)\nSigned-in accounts also get python/pip and curl/dig/ping/render — sign in from Settings.\n', time: new Date().toLocaleTimeString() }
+    { id: 'init', type: 'output', content: 'Kernos OS [Version 1.0.0]\n(c) 2025 Kernos Foundation. All rights reserved.\n\nType "help" for commands.\nFilesystem commands (ls, cd, cat, mkdir, write...) act on your real files and persist.\nPrefix with "?" for natural language (e.g. ? show large files)\nSigned-in accounts also get python/pip and curl/dig/ping/wget/render — sign in from Settings.\n', time: new Date().toLocaleTimeString() }
   ]);
   const [input, setInput] = useState('');
   // Persisted so history survives a reload, like a real shell's.
@@ -56,6 +56,15 @@ export const TerminalApp: React.FC = () => {
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The kernel.subscribe effect below mounts once ([] deps) so its closure
+  // over cwd/userId would otherwise go stale the moment the user `cd`s
+  // anywhere — a curl -O/wget response arriving after that would land in
+  // whatever directory was current at page load, not where the command was
+  // actually run. Refs mirror the latest values in without re-subscribing.
+  const cwdRef = useRef(cwd);
+  const userIdRef = useRef(userId);
+  useEffect(() => { cwdRef.current = cwd; }, [cwd]);
+  useEffect(() => { userIdRef.current = userId; }, [userId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -91,7 +100,7 @@ export const TerminalApp: React.FC = () => {
     let matches: string[] = [];
     let dirPrefix = '';
     if (isCommandPosition) {
-      const known = [...VFS_COMMANDS, ...PIPE_AWARE_COMMANDS, ...PYTHON_COMMANDS, ...INTEL_COMMANDS, ...TRAINING_COMMANDS, ...META_COMMANDS, 'clear', 'help', 'render', 'curl', 'dig', 'ping'];
+      const known = [...VFS_COMMANDS, ...PIPE_AWARE_COMMANDS, ...PYTHON_COMMANDS, ...INTEL_COMMANDS, ...TRAINING_COMMANDS, ...META_COMMANDS, 'clear', 'help', 'render', 'curl', 'dig', 'ping', 'wget'];
       matches = [...new Set(known)].filter(c => c.startsWith(partial)).sort();
     } else {
       const found = await completePath(cwd, partial, userId);
@@ -473,6 +482,22 @@ export const TerminalApp: React.FC = () => {
       // it the one reliable place to stop the progress indicator.
       if (env.topic === 'vm.exit') {
         setRunning(null);
+      }
+
+      // curl -O/-o or wget's downloaded bytes — the server that fetched
+      // them has no VFS to write into (see networkCommands.ts's
+      // CommandResult.download doc comment), so this is where the actual
+      // write happens, against the terminal's real current directory.
+      if (env.topic === 'vm.exec:download') {
+        const { name, contentBase64 } = env.payload as { name: string; contentBase64: string; encoding: 'base64' };
+        saveDownload(cwdRef.current, userIdRef.current, name, contentBase64).then(result => {
+          setLines(prev => [...prev, {
+            id: Math.random().toString(),
+            type: result.code === 0 ? 'output' : 'error',
+            content: result.code === 0 ? result.stdout : result.stderr,
+            time: new Date().toLocaleTimeString()
+          }]);
+        });
       }
 
       // `render <url> --screenshot` result — displayed as an image, not text.

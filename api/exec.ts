@@ -35,7 +35,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { checkRateLimit, getClientIp, rateLimitResponseHeaders } from '../lib/rateLimit.js';
 import { verifyAccessToken, extractBearerToken } from '../lib/verifyAuth.js';
-import { runCurl, runDig, runPing, NETWORK_USAGE } from '../lib/networkCommands.js';
+import { runCurl, runDig, runPing, runWget, NETWORK_USAGE } from '../lib/networkCommands.js';
 
 // Every entry here was probed against the deployed function and answered.
 // The list used to carry 39 names, 12 of which could never run:
@@ -65,7 +65,7 @@ export const ALLOWED_COMMANDS = new Set([
 
 // Real network access — see the file-header comment above. Handled before
 // the coreutils allowlist/sandbox path entirely, not shelled out.
-export const NETWORK_COMMANDS = new Set(['curl', 'dig', 'nslookup', 'ping']);
+export const NETWORK_COMMANDS = new Set(['curl', 'dig', 'nslookup', 'ping', 'wget']);
 
 const DANGEROUS_CHARS = /[&|;`$()<>]/;
 const EXEC_TIMEOUT_MS = 9000; // stay under the 10s function budget
@@ -139,7 +139,8 @@ export default async function handler(req: any, res: any) {
         // Same strings the failure messages use, so help and errors can't
         // describe the command differently.
         [...NETWORK_COMMANDS].sort().map(c => `  ${NETWORK_USAGE[c] || c}`).join('\n') + '\n' +
-        `  Usage: render <url> [--screenshot]   e.g. render https://example.com --screenshot\n`,
+        `  Usage: render <url> [--screenshot]   e.g. render https://example.com --screenshot\n` +
+        `  curl -O/-o and wget save into your real VFS at the terminal's current directory.\n`,
       stderr: '',
       code: 0,
     });
@@ -158,6 +159,7 @@ export default async function handler(req: any, res: any) {
     }
     const result = cmd === 'curl' ? await runCurl(args)
       : cmd === 'ping' ? await runPing(args)
+      : cmd === 'wget' ? await runWget(args)
       : await runDig(args); // dig, nslookup
     res.status(200).json(result);
     return;

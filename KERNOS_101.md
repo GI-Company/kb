@@ -117,11 +117,16 @@ Prefix input with `?` for natural-language translation — `? count the lines in
 
 ```
 curl https://example.com
+curl -O https://example.com/logo.png    # save into your VFS, named from the URL
+curl -o assets/logo.png https://...     # ...or an explicit path
+wget https://example.com/logo.png       # same download, curl -O's shape
 dig example.com
 ping example.com
 render https://example.com              # headless Chromium, extracted text
 render https://example.com --screenshot # ...or a PNG, inline in the terminal
 ```
+
+`curl -O`/`-o` and `wget` fetch and validate server-side, then hand the bytes to the browser to actually write — there's no server-side VFS to write into, only your own tab has one. Binary content round-trips as base64 (`cat` on a downloaded file shows a size summary instead of the raw encoded text); the byte cap is 2 MB per download, separate from the much smaller cap on text printed straight to the terminal.
 
 `render` needs enough function budget for a Chromium cold start plus a page load: fine on Fluid compute / Active CPU billing, too tight on Hobby's hard 10-second limit.
 
@@ -162,7 +167,7 @@ Applets run in a closed shadow root with a restricted kernel proxy — they can 
 - **Fresh sandbox per command** — a `mkdtemp`'d temp dir per invocation, stripped environment, hard timeout
 - **`GROQ_API_KEY` stays server-side** — only `api/chat.ts` (an Edge function) ever sees it
 - **Accounts** — Supabase Auth handles sign-up/sign-in and password storage; this codebase never stores a password. Row-level security scopes every table to `auth.uid()`. Guest access remains available and stays entirely in the browser.
-- **Network commands are gated** — `curl`/`dig`/`ping`/`render` require a signed-in account, and every outbound request is checked against private/loopback/link-local ranges on each redirect hop. Known gap: no DNS-rebinding protection.
+- **Network commands are gated** — `curl`/`dig`/`ping`/`wget`/`render` require a signed-in account, and every outbound request is checked against private/loopback/link-local ranges. `curl`/`ping`/`wget` pin the connection to the exact address validated (a Node `lookup` override, re-validated and re-pinned on each redirect hop), closing the DNS-rebinding gap where a second, independent resolution could answer differently from the one just checked. `render` hands the URL to Puppeteer's own network stack, which can't be pinned the same way — validated once, not pinned.
 - **Applets and agent code run sandboxed** — a closed shadow root, no real `eval`, no raw imports, a restricted kernel proxy that blocks destructive topics, plus a wall-clock timeout and per-execution call budgets. The timeout can't preempt genuinely synchronous code (single-threaded JS); the budgets are what bound a runaway loop.
 
 ---

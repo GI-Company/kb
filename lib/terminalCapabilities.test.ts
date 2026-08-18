@@ -18,9 +18,13 @@ describe('terminalCapabilities stays in sync with the real gates', () => {
     }
   });
 
-  it('has every real network command tagged net', () => {
+  it('has every real network command tagged net (plus vfs:write for curl/wget, which download into the VFS)', () => {
     for (const cmd of NETWORK_COMMANDS) {
-      expect(COMMAND_CAPABILITIES[cmd], `"${cmd}" from NETWORK_COMMANDS has no entry`).toEqual(['net']);
+      const caps = COMMAND_CAPABILITIES[cmd];
+      expect(caps, `"${cmd}" from NETWORK_COMMANDS has no entry`).toBeDefined();
+      expect(caps, `"${cmd}" is a network command but not tagged net`).toContain('net');
+      const expectsWrite = cmd === 'curl' || cmd === 'wget';
+      expect(caps.includes('vfs:write'), `"${cmd}" vfs:write tag should be ${expectsWrite}, got ${JSON.stringify(caps)}`).toBe(expectsWrite);
     }
   });
 

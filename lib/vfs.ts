@@ -86,15 +86,15 @@ const localBackend = {
     return !!readLocalState().nodes[id];
   },
 
-  async write(id: string, content: string): Promise<boolean> {
+  async write(id: string, content: string, encoding?: 'base64'): Promise<boolean> {
     const state = readLocalState();
     if (!state.nodes[id]) return false;
-    state.nodes[id] = { ...state.nodes[id], content };
+    state.nodes[id] = { ...state.nodes[id], content, encoding };
     writeLocalState(state);
     return true;
   },
 
-  async create(parentId: string, name: string, type: 'file' | 'directory', content = '', mountSource?: string): Promise<FileNode> {
+  async create(parentId: string, name: string, type: 'file' | 'directory', content = '', mountSource?: string, encoding?: 'base64'): Promise<FileNode> {
     const state = readLocalState();
     const parent = state.nodes[parentId] || state.nodes[ROOT_SENTINEL];
     const id = genId();
@@ -103,6 +103,7 @@ const localBackend = {
       name,
       type,
       content: type === 'file' ? content : undefined,
+      encoding: type === 'file' ? encoding : undefined,
       children: type === 'directory' ? [] : undefined,
       parentId: parent.id,
       mountSource,
@@ -175,12 +176,12 @@ function toParentId(id: string): string | null {
 
 const supabaseBackend = {
   async list(parentId: string, userId: string): Promise<FileNode[]> {
-    let query = supabase!.from('vfs_nodes').select('id,name,type,mount_source').eq('user_id', userId);
+    let query = supabase!.from('vfs_nodes').select('id,name,type,mount_source,encoding').eq('user_id', userId);
     const pid = toParentId(parentId);
     query = pid === null ? query.is('parent_id', null) : query.eq('parent_id', pid);
     const { data, error } = await query;
     if (error) throw error;
-    return (data ?? []).map(r => ({ id: r.id, name: r.name, type: r.type, mountSource: r.mount_source ?? undefined }));
+    return (data ?? []).map(r => ({ id: r.id, name: r.name, type: r.type, mountSource: r.mount_source ?? undefined, encoding: r.encoding ?? undefined }));
   },
 
   async read(id: string, userId: string): Promise<string> {
@@ -195,23 +196,23 @@ const supabaseBackend = {
     return !!data;
   },
 
-  async write(id: string, content: string, userId: string): Promise<boolean> {
+  async write(id: string, content: string, userId: string, encoding?: 'base64'): Promise<boolean> {
     const { error } = await supabase!
       .from('vfs_nodes')
-      .update({ content, updated_at: new Date().toISOString() })
+      .update({ content, encoding: encoding ?? null, updated_at: new Date().toISOString() })
       .eq('id', id)
       .eq('user_id', userId);
     return !error;
   },
 
-  async create(parentId: string, name: string, type: 'file' | 'directory', userId: string, content = '', mountSource?: string): Promise<FileNode> {
+  async create(parentId: string, name: string, type: 'file' | 'directory', userId: string, content = '', mountSource?: string, encoding?: 'base64'): Promise<FileNode> {
     const { data, error } = await supabase!
       .from('vfs_nodes')
-      .insert({ user_id: userId, parent_id: toParentId(parentId), name, type, content: type === 'file' ? content : null, mount_source: mountSource ?? null })
-      .select('id,name,type,mount_source')
+      .insert({ user_id: userId, parent_id: toParentId(parentId), name, type, content: type === 'file' ? content : null, mount_source: mountSource ?? null, encoding: type === 'file' ? (encoding ?? null) : null })
+      .select('id,name,type,mount_source,encoding')
       .single();
     if (error) throw error;
-    return { id: data.id, name: data.name, type: data.type, mountSource: data.mount_source ?? undefined };
+    return { id: data.id, name: data.name, type: data.type, mountSource: data.mount_source ?? undefined, encoding: data.encoding ?? undefined };
   },
 
   async rename(id: string, newName: string, userId: string): Promise<boolean> {
@@ -294,13 +295,18 @@ export const vfs = {
   exists(id: string, userId: string): Promise<boolean> {
     return (isGuestId(userId) ? localBackend.exists(id) : supabaseBackend.exists(id, userId));
   },
-  async write(id: string, content: string, userId: string): Promise<boolean> {
-    const wrote = await (isGuestId(userId) ? localBackend.write(id, content) : supabaseBackend.write(id, content, userId));
-    if (wrote) await writeThroughIfMounted(id, content);
+  async write(id: string, content: string, userId: string, encoding?: 'base64'): Promise<boolean> {
+    const wrote = await (isGuestId(userId) ? localBackend.write(id, content, encoding) : supabaseBackend.write(id, content, userId, encoding));
+    // Binary content written through to a mounted on-disk file would need
+    // decoding first (writeThroughIfMounted writes the string as-is) — no
+    // caller mounts a directory and downloads into it today, so this is
+    // simply skipped for encoded content rather than silently corrupting
+    // the on-disk file with raw base64 text.
+    if (wrote && !encoding) await writeThroughIfMounted(id, content);
     return wrote;
   },
-  create(parentId: string, name: string, type: 'file' | 'directory', userId: string, content = '', mountSource?: string): Promise<FileNode> {
-    return (isGuestId(userId) ? localBackend.create(parentId, name, type, content, mountSource) : supabaseBackend.create(parentId, name, type, userId, content, mountSource));
+  create(parentId: string, name: string, type: 'file' | 'directory', userId: string, content = '', mountSource?: string, encoding?: 'base64'): Promise<FileNode> {
+    return (isGuestId(userId) ? localBackend.create(parentId, name, type, content, mountSource, encoding) : supabaseBackend.create(parentId, name, type, userId, content, mountSource, encoding));
   },
   rename(id: string, newName: string, userId: string): Promise<boolean> {
     return (isGuestId(userId) ? localBackend.rename(id, newName) : supabaseBackend.rename(id, newName, userId));

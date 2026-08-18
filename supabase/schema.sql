@@ -130,9 +130,16 @@ create table if not exists vfs_nodes (
   type text not null check (type in ('file', 'directory')),
   content text,                      -- null for directories
   mount_source text,                 -- reserved: matches types.ts's FileNode.mountSource, unused today
+  encoding text,                     -- 'base64' for binary content (curl -O/wget downloads); null = plain text
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- `create table if not exists` above doesn't add columns to an
+-- already-deployed table, so a column added after the first deploy (this
+-- one) needs its own idempotent statement to keep the file's "safe to
+-- re-run any time" promise true for databases that already have vfs_nodes.
+alter table vfs_nodes add column if not exists encoding text;
 
 create index if not exists vfs_nodes_user_parent_idx on vfs_nodes(user_id, parent_id);
 
