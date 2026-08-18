@@ -46,17 +46,38 @@ function isPrivateIPv6(ip: string): boolean {
   return false;
 }
 
-/** Throws if `hostname` (a literal IP or a domain name) resolves to a private/internal address. Resolves successfully (no throw) otherwise. */
-export async function assertPublicHost(hostname: string): Promise<void> {
+export interface ValidatedAddress {
+  address: string;
+  family: 4 | 6;
+}
+
+/**
+ * Resolves `hostname` (a literal IP or a domain name), validates every
+ * returned address against the private/reserved ranges, and returns the
+ * one address a caller should actually connect to — not just whether one
+ * exists. This is what closes the DNS-rebinding gap `assertPublicHost`
+ * documents: a caller that re-resolves the hostname itself a moment later
+ * (fetch(), net.connect() given a hostname, ...) is trusting a second,
+ * independent lookup an attacker's own authoritative DNS server could
+ * answer differently — with a 0-TTL public address for this check and a
+ * private one for the real connection. Pinning to the address returned
+ * here, instead of the hostname, means that second lookup never happens.
+ */
+export async function resolvePinnedAddress(hostname: string): Promise<ValidatedAddress> {
   const isIPv4Literal = IPV4_LITERAL.test(hostname);
   const isIPv6Literal = hostname.includes(':') && !hostname.includes('/');
-  if (isIPv4Literal && isPrivateIPv4(hostname)) {
-    throw new Error(`refusing to connect to "${hostname}" — private/internal address ranges are blocked`);
+  if (isIPv4Literal) {
+    if (isPrivateIPv4(hostname)) {
+      throw new Error(`refusing to connect to "${hostname}" — private/internal address ranges are blocked`);
+    }
+    return { address: hostname, family: 4 };
   }
-  if (isIPv6Literal && isPrivateIPv6(hostname)) {
-    throw new Error(`refusing to connect to "${hostname}" — private/internal address ranges are blocked`);
+  if (isIPv6Literal) {
+    if (isPrivateIPv6(hostname)) {
+      throw new Error(`refusing to connect to "${hostname}" — private/internal address ranges are blocked`);
+    }
+    return { address: hostname, family: 6 };
   }
-  if (isIPv4Literal || isIPv6Literal) return; // already validated the literal directly, no DNS needed
 
   let records: { address: string; family: number }[];
   try {
@@ -73,4 +94,21 @@ export async function assertPublicHost(hostname: string): Promise<void> {
       throw new Error(`refusing to connect to "${hostname}" — it resolves to a private/internal address (${address})`);
     }
   }
+  // Every returned address was validated above — pin to the first, the
+  // same one a normal client would connect to first given this order.
+  const first = records[0];
+  return { address: first.address, family: first.family === 6 ? 6 : 4 };
+}
+
+/**
+ * Throws if `hostname` resolves to a private/internal address, resolves
+ * (no return value) otherwise. Kept as its own function, distinct from
+ * resolvePinnedAddress, because api/browser-render.ts's use case (checking
+ * a URL before handing it to Puppeteer, which then does its own,
+ * unpinnable connection inside the browser process) has nothing to pin to
+ * — there's no way to force Chromium's network stack onto one address the
+ * way a Node http.request's `lookup` option can.
+ */
+export async function assertPublicHost(hostname: string): Promise<void> {
+  await resolvePinnedAddress(hostname);
 }

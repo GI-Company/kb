@@ -11,7 +11,9 @@
 
 import { lookup } from 'node:dns/promises';
 import { createConnection } from 'node:net';
-import { assertPublicHost } from './networkGuard.js';
+import { request as httpRequest, IncomingMessage } from 'node:http';
+import { request as httpsRequest } from 'node:https';
+import { resolvePinnedAddress, ValidatedAddress } from './networkGuard.js';
 
 export interface CommandResult {
   stdout: string;
@@ -23,17 +25,88 @@ const FETCH_TIMEOUT_MS = 8000;
 const MAX_BODY_BYTES = 100_000;
 const MAX_REDIRECTS = 5;
 
-/** Like fetch(), but validates every hop's host against the SSRF guard before connecting to it — redirect: 'follow' would connect first and only let us inspect the result after the fact, which is too late. */
-async function guardedFetch(initialUrl: URL, method: string): Promise<Response> {
+/** Just enough of the Fetch API's Response shape for runCurl below — real headers/status/body, backed by a pinned Node http(s) request instead of fetch(). */
+interface PinnedResponse {
+  status: number;
+  statusText: string;
+  headers: Headers;
+  text(): Promise<string>;
+}
+
+function toWebHeaders(nodeHeaders: NodeJS.Dict<string | string[]>): Headers {
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(nodeHeaders)) {
+    if (value === undefined) continue;
+    for (const v of Array.isArray(value) ? value : [value]) headers.append(key, v);
+  }
+  return headers;
+}
+
+/**
+ * Issues one HTTP(S) request pinned to `pinned.address` — the request's
+ * `lookup` option always hands that exact address back, regardless of
+ * what hostname Node's connection logic asks it to resolve, so the
+ * independent second DNS lookup a plain fetch()/http.request() would
+ * otherwise perform (and a DNS-rebinding attacker could answer
+ * differently from the validated address) never happens. The Host header
+ * and TLS servername are still the real hostname — connecting to the
+ * pinned IP doesn't mean lying to the destination server about who it is,
+ * just refusing to let it (or anything on the path to it) pick where the
+ * socket actually lands.
+ */
+function pinnedRequest(url: URL, method: string, pinned: ValidatedAddress): Promise<PinnedResponse> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
+
+    const requestFn = url.protocol === 'https:' ? httpsRequest : httpRequest;
+    const req = requestFn({
+      hostname: pinned.address,
+      port: url.port ? Number(url.port) : (url.protocol === 'https:' ? 443 : 80),
+      path: url.pathname + url.search,
+      method,
+      lookup: (_hostname: string, _options: unknown, callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void) => {
+        callback(null, pinned.address, pinned.family);
+      },
+      // Real hostname for SNI and certificate-hostname verification — a
+      // cert is issued for the domain, never for the IP we're actually
+      // connecting to.
+      servername: url.protocol === 'https:' ? url.hostname : undefined,
+      headers: {
+        host: url.host,
+        'user-agent': 'Kernos-Terminal/1.0',
+      },
+    } as any, (res: IncomingMessage) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => settle(() => resolve({
+        status: res.statusCode ?? 0,
+        statusText: res.statusMessage ?? '',
+        headers: toWebHeaders(res.headers),
+        text: async () => Buffer.concat(chunks).toString('utf-8'),
+      })));
+      res.on('error', (err) => settle(() => reject(err)));
+    });
+
+    const timer = setTimeout(() => {
+      const err = new Error(`request timed out after ${FETCH_TIMEOUT_MS / 1000}s`);
+      err.name = 'TimeoutError'; // matches what runCurl's catch already checks for
+      settle(() => reject(err));
+      req.destroy();
+    }, FETCH_TIMEOUT_MS);
+
+    req.on('error', (err) => { clearTimeout(timer); settle(() => reject(err)); });
+    req.on('close', () => clearTimeout(timer));
+    req.end();
+  });
+}
+
+/** Like fetch(), but resolves and validates each hop's host itself, then pins the connection to that exact address — redirect: 'follow' would connect first and only let us inspect the result after the fact, which is too late, and a plain fetch() to a validated hostname re-resolves independently at connect time regardless. */
+async function guardedFetch(initialUrl: URL, method: string): Promise<PinnedResponse> {
   let current = initialUrl;
   for (let i = 0; i <= MAX_REDIRECTS; i++) {
-    await assertPublicHost(current.hostname);
-    const res = await fetch(current.toString(), {
-      method,
-      redirect: 'manual',
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      headers: { 'user-agent': 'Kernos-Terminal/1.0' },
-    });
+    const pinned = await resolvePinnedAddress(current.hostname);
+    const res = await pinnedRequest(current, method, pinned);
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get('location');
       if (!location) return res;
@@ -127,15 +200,21 @@ export async function runPing(args: string[]): Promise<CommandResult> {
   const hostname = args.find(a => !a.startsWith('-'));
   if (!hostname) return fail('ping', 'no hostname provided');
 
+  let pinned: ValidatedAddress;
   try {
-    await assertPublicHost(hostname);
+    pinned = await resolvePinnedAddress(hostname);
   } catch (err: any) {
     return { stdout: '', stderr: `ping: ${err.message}\n`, code: 1 };
   }
 
   return new Promise<CommandResult>((resolve) => {
     const start = Date.now();
-    const socket = createConnection({ host: hostname, port: PING_PORT, timeout: PING_TIMEOUT_MS });
+    // Connects to the exact address just validated, not the hostname
+    // again — passing a raw IP here means Node has nothing left to
+    // resolve, so there's no second, independent lookup an attacker's
+    // rebinding server could answer differently from the one
+    // resolvePinnedAddress just checked.
+    const socket = createConnection({ host: pinned.address, port: PING_PORT, timeout: PING_TIMEOUT_MS });
     socket.on('connect', () => {
       const ms = Date.now() - start;
       socket.destroy();
