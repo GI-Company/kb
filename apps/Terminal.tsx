@@ -176,9 +176,12 @@ export const TerminalApp: React.FC = () => {
     // place — not a check this function performs so much as a fact
     // already true about what result.files contains.
     if (result.code === 0 && result.files) {
-      const { written } = await writeBackFiles(cwd, userId, files, result.files);
+      const { written, failed } = await writeBackFiles(cwd, userId, files, result.files);
       if (written.length) {
         result.stdout += `${written.length} file${written.length === 1 ? '' : 's'} written: ${written.join(', ')}\n`;
+      }
+      if (failed.length) {
+        result.stderr += `${failed.length} file${failed.length === 1 ? '' : 's'} failed to write: ${failed.join(', ')}\n`;
       }
     }
     return result;

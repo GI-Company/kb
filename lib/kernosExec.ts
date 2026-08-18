@@ -182,15 +182,26 @@ export async function runKernosExec(
       // The commit/discard decision. ok:true is the only path a staged
       // write ever reaches durable storage — a timeout, a worker crash, or
       // the script itself throwing all fall through to discard(), and
-      // nothing the sandbox wrote survives. Commit failures (a stale id
-      // that no longer exists, say) are swallowed rather than flipping a
-      // result the caller already trusted to be ok:true — the call
-      // budget already bounded how much a run could stage, so a partial
-      // commit here is a smaller, already-a-no-op-style failure, not a
-      // new one.
+      // nothing the sandbox wrote survives. Per-op commit failures (a
+      // stale id that no longer exists, say) don't flip a result the
+      // caller already trusts to be ok:true — the call budget already
+      // bounded how much a run could stage, so a partial commit here is a
+      // smaller, already-a-no-op-style failure, not a new one — but they
+      // ARE logged individually now (commit() reports every failed op
+      // rather than aborting on the first one), instead of one opaque
+      // caught exception that could hide how much of the batch actually
+      // landed.
       if (result.ok && overlay.hasPendingWrites) {
         overlay.commit()
-          .catch(err => console.error('[kernos.exec] overlay commit failed:', err))
+          .then(report => {
+            if (report.failed.length) {
+              console.error(
+                `[kernos.exec] overlay commit: ${report.committed}/${report.committed + report.failed.length} ops landed`,
+                report.failed
+              );
+            }
+          })
+          .catch(err => console.error('[kernos.exec] overlay commit failed unexpectedly:', err))
           .finally(() => resolve(result));
         return;
       }

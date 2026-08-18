@@ -82,6 +82,10 @@ const localBackend = {
     return readLocalState().nodes[id]?.content ?? '';
   },
 
+  async exists(id: string): Promise<boolean> {
+    return !!readLocalState().nodes[id];
+  },
+
   async write(id: string, content: string): Promise<boolean> {
     const state = readLocalState();
     if (!state.nodes[id]) return false;
@@ -185,6 +189,12 @@ const supabaseBackend = {
     return data?.content ?? '';
   },
 
+  async exists(id: string, userId: string): Promise<boolean> {
+    const { data, error } = await supabase!.from('vfs_nodes').select('id').eq('id', id).eq('user_id', userId).maybeSingle();
+    if (error) throw error;
+    return !!data;
+  },
+
   async write(id: string, content: string, userId: string): Promise<boolean> {
     const { error } = await supabase!
       .from('vfs_nodes')
@@ -280,6 +290,9 @@ export const vfs = {
   },
   read(id: string, userId: string): Promise<string> {
     return (isGuestId(userId) ? localBackend.read(id) : supabaseBackend.read(id, userId));
+  },
+  exists(id: string, userId: string): Promise<boolean> {
+    return (isGuestId(userId) ? localBackend.exists(id) : supabaseBackend.exists(id, userId));
   },
   async write(id: string, content: string, userId: string): Promise<boolean> {
     const wrote = await (isGuestId(userId) ? localBackend.write(id, content) : supabaseBackend.write(id, content, userId));

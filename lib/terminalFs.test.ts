@@ -15,6 +15,7 @@ vi.mock('./vfs', () => ({
     list: async (parentId: string) =>
       Object.values(nodes).filter(n => n.parentId === parentId).map(n => ({ id: n.id, name: n.name, type: n.type })),
     read: async (id: string) => nodes[id]?.content ?? '',
+    exists: async (id: string) => !!nodes[id],
     write: async (id: string, content: string) => { if (nodes[id]) nodes[id].content = content; return true; },
     create: async (parentId: string, name: string, type: 'file' | 'directory', _u: string, content = '') => {
       const id = `n${++seq}`;

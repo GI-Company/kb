@@ -4,6 +4,7 @@ const state = { nodes: new Map<string, { id: string; name: string; type: string;
 let idCounter = 0;
 
 const vfsRead = vi.fn(async (id: string) => state.nodes.get(id)?.content ?? '');
+const vfsExists = vi.fn(async (id: string) => state.nodes.has(id));
 const vfsWrite = vi.fn(async (id: string, content: string) => {
   const node = state.nodes.get(id);
   if (!node) return false;
@@ -21,7 +22,7 @@ const vfsCreate = vi.fn(async (parentId: string, name: string, type: 'file' | 'd
 });
 
 vi.mock('./vfs', () => ({
-  vfs: { read: vfsRead, write: vfsWrite, list: vfsList, create: vfsCreate },
+  vfs: { read: vfsRead, exists: vfsExists, write: vfsWrite, list: vfsList, create: vfsCreate },
 }));
 
 const { VfsOverlay } = await import('./vfsOverlay');
@@ -132,5 +133,80 @@ describe('VfsOverlay', () => {
     expect(overlay.hasPendingWrites).toBe(false);
     await overlay.write('existing', 'x');
     expect(overlay.hasPendingWrites).toBe(true);
+  });
+
+  // The bug this session's code review flagged: write() used to accept
+  // any id optimistically and only discover a dead target at commit time
+  // — by which point the sandboxed run had already reported ok:true, with
+  // no way for the caller's own script to react to the failure at all.
+  describe('write() fails fast on a dead id', () => {
+    it('returns false and stages nothing for an id that is neither real nor staged', async () => {
+      const overlay = new VfsOverlay('u1');
+      const ok = await overlay.write('does-not-exist', 'x');
+
+      expect(ok).toBe(false);
+      expect(overlay.hasPendingWrites).toBe(false);
+      expect(vfsExists).toHaveBeenCalledWith('does-not-exist', 'u1');
+    });
+
+    it('still succeeds against a real pre-existing id', async () => {
+      const overlay = new VfsOverlay('u1');
+      const ok = await overlay.write('existing', 'changed');
+      expect(ok).toBe(true);
+    });
+
+    it('still succeeds against a tempId staged by an earlier create() in the same overlay, without a real-vfs check', async () => {
+      const overlay = new VfsOverlay('u1');
+      const node = await overlay.create('root', 'new.txt', 'file', 'first');
+      vfsExists.mockClear();
+      const ok = await overlay.write(node.id, 'second');
+
+      expect(ok).toBe(true);
+      expect(vfsExists).not.toHaveBeenCalled(); // already known-staged, no round trip needed
+    });
+  });
+
+  describe('commit() reports per-op results instead of aborting on the first failure', () => {
+    it('reports a full success with no failures', async () => {
+      const overlay = new VfsOverlay('u1');
+      await overlay.write('existing', 'changed');
+      await overlay.create('root', 'new.txt', 'file', 'hi');
+      const report = await overlay.commit();
+
+      expect(report).toEqual({ committed: 2, failed: [] });
+    });
+
+    it('one op failing does not block unrelated ops from committing', async () => {
+      // 'existing' gets deleted out from under the overlay between staging
+      // and commit — vfs.write() will legitimately return false for it.
+      const overlay = new VfsOverlay('u1');
+      await overlay.write('existing', 'changed');
+      await overlay.create('root', 'new.txt', 'file', 'hi');
+      state.nodes.delete('existing');
+
+      const report = await overlay.commit();
+
+      expect(report.committed).toBe(1);
+      expect(report.failed).toHaveLength(1);
+      expect(report.failed[0].op).toMatchObject({ kind: 'write', id: 'existing' });
+      // The unrelated create still landed for real, despite the write failing.
+      expect([...state.nodes.values()].some(n => n.name === 'new.txt')).toBe(true);
+    });
+
+    it('a create failing marks its staged children as failed too, without attempting them against a bogus parent id', async () => {
+      const overlay = new VfsOverlay('u1');
+      const dir = await overlay.create('root', 'subdir', 'directory');
+      await overlay.create(dir.id, 'child.txt', 'file', 'nested');
+      vfsCreate.mockImplementationOnce(async () => { throw new Error('create failed'); });
+
+      const report = await overlay.commit();
+
+      expect(report.committed).toBe(0);
+      expect(report.failed).toHaveLength(2);
+      expect(report.failed.map(f => f.op.kind === 'create' ? f.op.name : null)).toEqual(['subdir', 'child.txt']);
+      // vfs.create was never called a second time for the child against
+      // the parent's raw (unresolved) tempId string.
+      expect(vfsCreate).toHaveBeenCalledTimes(1);
+    });
   });
 });

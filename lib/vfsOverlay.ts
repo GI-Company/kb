@@ -35,6 +35,13 @@ type StagedCreate = {
 };
 type StagedOp = StagedWrite | StagedCreate;
 
+export interface CommitReport {
+  /** Number of staged ops that landed in the real VFS. */
+  committed: number;
+  /** Ops that didn't — either vfs itself rejected them, or their target was a tempId whose own create() already failed. */
+  failed: { op: StagedOp; error: string }[];
+}
+
 let counter = 0;
 const nextTempId = () => `staged:${Date.now()}:${counter++}`;
 
@@ -72,14 +79,18 @@ export class VfsOverlay {
 
   async write(id: string, content: string): Promise<boolean> {
     const existing = this.staged.get(id);
+    if (!existing) {
+      // Not something staged in this overlay yet, so it has to be a real,
+      // already-existing node — otherwise there is nothing for this write
+      // to land on. Checked now rather than deferred to commit(): a script
+      // that thinks a write succeeded (because write() returned true) but
+      // discovers otherwise only at commit time has no way to react — by
+      // then the sandboxed run has already finished and reported ok:true.
+      const isReal = await vfs.exists(id, this.userId);
+      if (!isReal) return false;
+    }
     this.staged.set(id, existing ? { ...existing, content } : { id, name: '', type: 'file', content });
     this.ops.push({ kind: 'write', id, content });
-    // Optimistic: a write against a genuinely bad real id would have
-    // returned false immediately before staging existed, and now only
-    // fails silently at commit() instead. Accepted for v1 — verifying
-    // existence here is a full extra round trip, and the failure mode is
-    // "the write doesn't happen," identical to today's behavior, just
-    // discovered later rather than by the caller's own script.
     return true;
   }
 
@@ -110,19 +121,55 @@ export class VfsOverlay {
    * after a create for the same tempId lands after it, so the final
    * content is whatever was written last, matching what the agent's script
    * actually did.
+   *
+   * Every op is attempted independently rather than aborting the whole
+   * batch on the first failure — a script that wrote three unrelated files
+   * shouldn't lose the two good writes because the third target was
+   * deleted out from under it mid-run. Never throws: failures are
+   * collected into the returned report instead, so a caller that doesn't
+   * check it (writeBackFiles's bare `await overlay.commit()`) still gets a
+   * fully-attempted commit rather than one silently truncated partway
+   * through by an uncaught exception.
    */
-  async commit(): Promise<void> {
+  async commit(): Promise<CommitReport> {
     const idMap = new Map<string, string>(); // tempId -> real id, once created
+    const deadTempIds = new Set<string>(); // tempIds whose own create() failed
+    const failed: CommitReport['failed'] = [];
+    let committed = 0;
+
     for (const op of this.ops) {
       if (op.kind === 'create') {
+        if (deadTempIds.has(op.parentId)) {
+          deadTempIds.add(op.tempId);
+          failed.push({ op, error: `parent directory failed to commit` });
+          continue;
+        }
         const realParentId = idMap.get(op.parentId) ?? op.parentId;
-        const node = await vfs.create(realParentId, op.name, op.type, this.userId, op.content);
-        idMap.set(op.tempId, node.id);
+        try {
+          const node = await vfs.create(realParentId, op.name, op.type, this.userId, op.content);
+          idMap.set(op.tempId, node.id);
+          committed++;
+        } catch (err: any) {
+          deadTempIds.add(op.tempId);
+          failed.push({ op, error: err?.message || String(err) });
+        }
       } else {
+        if (deadTempIds.has(op.id)) {
+          failed.push({ op, error: `target failed to commit` });
+          continue;
+        }
         const realId = idMap.get(op.id) ?? op.id;
-        await vfs.write(realId, op.content, this.userId);
+        try {
+          const ok = await vfs.write(realId, op.content, this.userId);
+          if (ok) committed++;
+          else failed.push({ op, error: 'vfs.write rejected it' });
+        } catch (err: any) {
+          failed.push({ op, error: err?.message || String(err) });
+        }
       }
     }
+
+    return { committed, failed };
   }
 
   /** Nothing to undo — nothing staged here ever touched durable storage. */

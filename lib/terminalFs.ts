@@ -395,23 +395,29 @@ export async function writeBackFiles(
   userId: string,
   original: Record<string, string>,
   finalState: Record<string, string>
-): Promise<{ written: string[] }> {
+): Promise<{ written: string[]; failed: string[] }> {
   const changed = Object.entries(finalState).filter(([name, content]) => original[name] !== content);
-  if (changed.length === 0) return { written: [] };
+  if (changed.length === 0) return { written: [], failed: [] };
 
   const existing = await vfs.list(dirId(cwd), userId);
   const byName = new Map(existing.map(n => [n.name, n]));
   const overlay = new VfsOverlay(userId);
-  const written: string[] = [];
+  // id (real, for a write) or tempId (for a create) -> file name, so the
+  // commit report below — which only knows about staged ops, not names —
+  // can be translated back into which names actually landed.
+  const idToName = new Map<string, string>();
 
   for (const [name, content] of changed) {
     const node = byName.get(name);
     if (node && node.type === 'file') {
-      await overlay.write(node.id, content);
-      written.push(name);
+      const staged = await overlay.write(node.id, content);
+      if (staged) idToName.set(node.id, name);
+      // staged === false: the file's own id no longer exists in the real
+      // VFS (deleted out from under this run) — nothing to commit, so
+      // nothing to report as written either.
     } else if (!node) {
-      await overlay.create(dirId(cwd), name, 'file', content);
-      written.push(name);
+      const created = await overlay.create(dirId(cwd), name, 'file', content);
+      idToName.set(created.id, name);
     }
     // A name colliding with an existing DIRECTORY node is silently
     // skipped — vfs.ts has no operation for "replace a directory with a
@@ -420,8 +426,12 @@ export async function writeBackFiles(
     // otherwise-successful run over.
   }
 
-  await overlay.commit();
-  return { written };
+  const report = await overlay.commit();
+  const failedIds = new Set(report.failed.map(f => (f.op.kind === 'create' ? f.op.tempId : f.op.id)));
+  const written: string[] = [];
+  const failed: string[] = [];
+  for (const [id, name] of idToName) (failedIds.has(id) ? failed : written).push(name);
+  return { written, failed };
 }
 
 /** Longest common prefix, so Tab can advance partway on an ambiguous match. */
