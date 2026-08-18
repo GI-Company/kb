@@ -32,6 +32,7 @@ import { kernel } from './services/kernel';
 import { AppUser, getSession, createGuestUser } from './lib/auth';
 import { identifyUser } from './lib/analytics';
 import { startGuestUsageTracking, GUEST_LIMIT_MESSAGE_KEY } from './lib/guestUsage';
+import { ensurePersistentStorage } from './lib/storagePersistence';
 import { getSetting } from './lib/settings';
 import { AnimatePresence } from 'framer-motion';
 
@@ -84,6 +85,15 @@ const App: React.FC = () => {
     let seen = true;
     try { seen = localStorage.getItem(WALKTHROUGH_SEEN_KEY) === 'true'; } catch { /* default to seen=true, don't nag if storage is unavailable */ }
     if (!seen) openWalkthrough();
+  }, [phase]);
+
+  // Ask the browser not to evict this origin's storage under pressure —
+  // applies equally to guest (localStorage VFS) and signed-in sessions,
+  // since it's protecting the browser's own storage for this origin, not
+  // anything auth-specific. Best-effort and silent; see lib/storagePersistence.ts.
+  useEffect(() => {
+    if (phase !== 'desktop') return;
+    ensurePersistentStorage();
   }, [phase]);
 
   // 15-min/day/IP guest quota (see api/guest-usage.ts). Real accounts are

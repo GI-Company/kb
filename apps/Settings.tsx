@@ -5,7 +5,8 @@ import { resetAnalyticsIdentity, setAnalyticsOptOut } from '../lib/analytics';
 import { DONATE_URL, isDonateConfigured } from '../lib/donate';
 import { DEFAULT_AGENTS } from '../lib/agents';
 import { getSettings, setSetting, resetSettings, subscribeSettings, KernosSettings } from '../lib/settings';
-import { Settings, Palette, Type, Bot, LogOut, UserCircle, Loader2, Zap, Compass, Heart, ExternalLink, Sun, Moon, RotateCcw, ShieldOff, PlaySquare } from 'lucide-react';
+import { ensurePersistentStorage, getStorageEstimate, PersistenceStatus, StorageEstimate } from '../lib/storagePersistence';
+import { Settings, Palette, Type, Bot, LogOut, UserCircle, Loader2, Zap, Compass, Heart, ExternalLink, Sun, Moon, RotateCcw, ShieldOff, PlaySquare, HardDrive } from 'lucide-react';
 
 // Toggle switch — shared visual for every boolean preference below, matches
 // the Lite Mode toggle this replaced/extended.
@@ -39,6 +40,8 @@ export const SettingsApp: React.FC = () => {
   const [sessionUser, setSessionUser] = useState<AppUser | null>(null);
   const [guestUser, setGuestUser] = useState<AppUser | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  const [persistence, setPersistence] = useState<PersistenceStatus | null>(null);
+  const [storageEstimate, setStorageEstimate] = useState<StorageEstimate | null>(null);
 
   useEffect(() => {
     getSession().then(setSessionUser);
@@ -46,6 +49,14 @@ export const SettingsApp: React.FC = () => {
       const saved = localStorage.getItem('kernos_guest_user');
       if (saved) setGuestUser(JSON.parse(saved));
     } catch { /* corrupt/unavailable storage — just skip the guest badge */ }
+  }, []);
+
+  // Re-checked (not just read once) every time this panel opens — App.tsx
+  // already requests persist() on desktop entry, so by the time someone
+  // looks here it should usually already reflect that.
+  useEffect(() => {
+    ensurePersistentStorage().then(setPersistence);
+    getStorageEstimate().then(setStorageEstimate);
   }, []);
 
   // Any tab (or Settings.tsx itself) changing a setting updates this
@@ -251,6 +262,38 @@ export const SettingsApp: React.FC = () => {
         <Row label="Opt Out of Analytics" hint="Stops PostHog from receiving events from this browser, immediately. No effect if analytics isn't configured for this deployment.">
           <Toggle checked={settings.analyticsOptOut} onChange={v => update('analyticsOptOut', v)} />
         </Row>
+      </div>
+
+      <div className="mb-6 p-4 rounded-lg bg-white/5 border border-white/5">
+        <div className="flex items-center gap-2 mb-3">
+          <HardDrive size={14} className="text-cyan-400" />
+          <span className="text-xs font-mono text-gray-400 uppercase tracking-wider">Storage</span>
+        </div>
+
+        <Row
+          label="Persistent Storage"
+          hint={
+            !persistence?.supported
+              ? "This browser doesn't support requesting persistent storage — your files are still saved, just without protection from eviction under storage pressure."
+              : persistence.persisted
+                ? 'Granted. Your VFS, trained models, and chat history are protected from automatic eviction.'
+                : "Not granted yet — the browser decides based on how much you've used Kernos. It's requested automatically each time you enter the desktop."
+          }
+        >
+          <span className={`text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded ${
+            persistence?.persisted ? 'bg-emerald-500/10 text-emerald-400' : 'bg-white/5 text-gray-500'
+          }`}>
+            {!persistence ? '…' : !persistence.supported ? 'unsupported' : persistence.persisted ? 'granted' : 'not yet'}
+          </span>
+        </Row>
+
+        {storageEstimate && (
+          <Row label="Space Used" hint="Everything this browser tab stores for Kernos — VFS files, trained local models, chat history, and cached app assets.">
+            <span className="text-xs font-mono text-gray-400">
+              {(storageEstimate.usageBytes / 1024 / 1024).toFixed(1)} MB / {(storageEstimate.quotaBytes / 1024 / 1024 / 1024).toFixed(1)} GB
+            </span>
+          </Row>
+        )}
       </div>
 
       <div className="mb-6 p-4 rounded-lg bg-white/5 border border-white/5">

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useOS } from '../../store';
-import { Terminal, Monitor, FileCode, HardDrive, Cpu, Menu, Workflow, Bot, Brain, Sparkles, Activity, Settings, Users, Clock as ClockIcon, X, Pin, PinOff, LogOut, Maximize, Minus, Play, Timer, Home, Grid3x3, Tags } from 'lucide-react';
+import { Terminal, Monitor, FileCode, HardDrive, Cpu, Menu, Workflow, Bot, Brain, Sparkles, Activity, Settings, Users, Clock as ClockIcon, X, Pin, PinOff, LogOut, Maximize, Minus, Play, Timer, Home, Grid3x3, Tags, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useContextMenu } from './ContextMenu';
 import { formatRemaining } from '../../lib/guestUsage';
@@ -42,6 +42,27 @@ const GuestUsageChip: React.FC = () => {
       <Timer size={11} className={low ? 'animate-pulse' : ''} />
       <span className="text-[10px] font-mono tracking-widest">{formatRemaining(remaining)}</span>
     </div>
+  );
+};
+
+// Set by index.tsx once the service worker's controller changes with one
+// already present at page load — a real update, not first-ever activation.
+// Deliberately NOT a self-dismissing toast (see components/ui/ToastSystem.tsx):
+// an installed standalone window has no other way back to this, and losing
+// it after 5 seconds would mean losing the only path to actually picking up
+// the new build until the next full quit-and-relaunch.
+const UpdateAvailableChip: React.FC = () => {
+  const updateAvailable = useOS(s => s.updateAvailable);
+  if (!updateAvailable) return null;
+  return (
+    <button
+      onClick={() => window.location.reload()}
+      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border backdrop-blur-sm bg-cyan-500/10 border-cyan-500/20 text-cyan-400 hover:bg-cyan-500/20 transition-colors animate-pulse"
+      title="A new version is ready — click to reload"
+    >
+      <RefreshCw size={11} />
+      <span className="text-[10px] font-mono tracking-widest hidden sm:inline">UPDATE</span>
+    </button>
   );
 };
 
@@ -196,6 +217,7 @@ export const Taskbar: React.FC = () => {
       <>
         {/* Top status strip */}
         <div className="h-7 w-full bg-[var(--kernos-bg-taskbar)] backdrop-blur-2xl flex items-center justify-end gap-2 px-3 z-[9000] absolute top-0 select-none" style={{ paddingTop: 'env(safe-area-inset-top)' }}>
+          <UpdateAvailableChip />
           <GuestUsageChip />
           <Clock />
         </div>
@@ -415,6 +437,7 @@ export const Taskbar: React.FC = () => {
           <div className="w-1.5 h-1.5 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.8)] animate-pulse" />
           <span className="text-[10px] text-gray-400 font-mono tracking-widest hidden sm:block">ONLINE</span>
         </div>
+        <UpdateAvailableChip />
         <GuestUsageChip />
         <Clock />
       </div>

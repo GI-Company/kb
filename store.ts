@@ -55,6 +55,14 @@ interface OSStore {
   // render/action, not just "whichever one checked window.innerWidth last".
   isMobile: boolean;
   setIsMobile: (v: boolean) => void;
+
+  // Set by index.tsx when the service worker's controller changes AFTER
+  // one was already controlling this page load — i.e. a real update, not
+  // the SW's first-ever activation. An installed standalone window has no
+  // natural refresh gesture, so without this the already-loaded JS would
+  // just keep running indefinitely against a SW now serving newer assets.
+  updateAvailable: boolean;
+  setUpdateAvailable: (v: boolean) => void;
 }
 
 function readLiteModePref(): boolean {
@@ -128,6 +136,9 @@ export const useOS = create<OSStore>((set) => ({
   },
   isMobile: computeIsMobile(),
   setIsMobile: (v) => set({ isMobile: v }),
+
+  updateAvailable: false,
+  setUpdateAvailable: (v) => set({ updateAvailable: v }),
 
   openWindow: (appId, title, data) => set((state) => {
     const id = Math.random().toString(36).substring(2, 9);
