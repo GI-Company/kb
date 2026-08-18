@@ -27,6 +27,17 @@ export interface GuestUsageState {
   remainingSeconds: number;
   limitSeconds: number;
   allowed: boolean;
+  /**
+   * True only until the very first heartbeat settles. The optimistic 15:00
+   * this starts at is a display default, not a verified fact — a guest who
+   * already used up today's quota in an earlier session shouldn't see a
+   * confident countdown for however long that first round trip takes, even
+   * though `allowed` itself never flips true->false incorrectly during
+   * this window (the forced-logout in App.tsx only ever acts on an
+   * explicit server response). This is what a caller checks before
+   * trusting remainingSeconds enough to display it as fact.
+   */
+  checking: boolean;
 }
 
 interface HeartbeatResponse {
@@ -67,22 +78,27 @@ async function heartbeat(elapsedSeconds: number): Promise<HeartbeatResponse | nu
  */
 export function startGuestUsageTracking(onUpdate: (state: GuestUsageState) => void): () => void {
   let cancelled = false;
+  let checking = true;
   let remaining = GUEST_DAILY_LIMIT_SECONDS;
   let lastHeartbeatAt = Date.now();
 
   const emit = (allowed = true) => {
-    onUpdate({ remainingSeconds: remaining, limitSeconds: GUEST_DAILY_LIMIT_SECONDS, allowed });
+    onUpdate({ remainingSeconds: remaining, limitSeconds: GUEST_DAILY_LIMIT_SECONDS, allowed, checking });
   };
-  emit(); // show 15:00 immediately, don't wait on the network
+  emit(); // show 15:00 immediately, don't wait on the network — checking:true says it's a placeholder, not a verified number
 
   // Ask the server where this guest actually stands, right now, rather than
   // waiting a full HEARTBEAT_MS. Without this the optimistic 15:00 is the
-  // only thing anyone sees for the first 20 seconds — so a guest who is
-  // already over quota, or a deployment refusing guest access because it
-  // can't enforce the quota, gets 20 seconds of free rein before the first
-  // check lands. elapsedSeconds 0 means "report, don't bill".
+  // only thing anyone sees until the first heartbeat lands — so a guest who
+  // is already over quota, or a deployment refusing guest access because it
+  // can't enforce the quota, would see a confidently wrong countdown for
+  // that whole window. elapsedSeconds 0 means "report, don't bill". Once
+  // this settles — allowed, refused, or a genuine network failure — checking
+  // drops to false either way: fail-open still applies to outages, this
+  // only closes the gap where the UI *claimed* certainty it didn't have.
   heartbeat(0).then(state => {
-    if (!state || cancelled) return;
+    checking = false;
+    if (!state || cancelled) { if (!cancelled) emit(); return; }
     if (state.remainingSeconds !== null) remaining = state.remainingSeconds;
     emit(state.allowed);
   });

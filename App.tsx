@@ -91,8 +91,8 @@ const App: React.FC = () => {
   // a guest, and stops the moment they sign in, sign out, or leave desktop.
   useEffect(() => {
     if (phase !== 'desktop' || !user?.isGuest) return;
-    const stop = startGuestUsageTracking(({ remainingSeconds, allowed }) => {
-      setGuestUsage(remainingSeconds, !allowed);
+    const stop = startGuestUsageTracking(({ remainingSeconds, allowed, checking }) => {
+      setGuestUsage(remainingSeconds, !allowed, checking);
       if (!allowed) {
         try {
           localStorage.setItem(

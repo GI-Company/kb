@@ -11,9 +11,26 @@ import { getSetting, subscribeSettings } from '../../lib/settings';
 // guest sessions before the server-configured check comes back, show no chip.
 const GuestUsageChip: React.FC = () => {
   const remaining = useOS(s => s.guestRemainingSeconds);
+  const checking = useOS(s => s.guestCheckingQuota);
   const [warningThreshold, setWarningThreshold] = useState(() => getSetting('guestQuotaWarningSeconds'));
   useEffect(() => subscribeSettings(s => setWarningThreshold(s.guestQuotaWarningSeconds)), []);
   if (remaining === null) return null;
+  // The 15:00 lib/guestUsage.ts starts at is a display default, not a
+  // verified number — a guest who already used up today's quota in an
+  // earlier session shouldn't see a confident countdown for however long
+  // the first heartbeat's round trip takes. This is that window, made
+  // honest rather than silently showing a number that might be wrong.
+  if (checking) {
+    return (
+      <div
+        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border backdrop-blur-sm bg-black/40 border-white/5 text-gray-500"
+        title="Confirming daily guest access"
+      >
+        <Timer size={11} className="animate-pulse" />
+        <span className="text-[10px] font-mono tracking-widest">checking…</span>
+      </div>
+    );
+  }
   const low = remaining <= warningThreshold;
   return (
     <div

@@ -43,7 +43,9 @@ interface OSStore {
   // "not a guest" or "server-side limit not configured", not "no time left".
   guestRemainingSeconds: number | null;
   guestLimitReached: boolean;
-  setGuestUsage: (remainingSeconds: number | null, limitReached: boolean) => void;
+  /** True only until the first quota heartbeat settles — see lib/guestUsage.ts's GuestUsageState.checking. */
+  guestCheckingQuota: boolean;
+  setGuestUsage: (remainingSeconds: number | null, limitReached: boolean, checkingQuota: boolean) => void;
 
   // Below MOBILE_BREAKPOINT, App.tsx/Window.tsx/Taskbar.tsx switch to a
   // full-screen single-app layout instead of freely draggable/overlapping
@@ -116,7 +118,9 @@ export const useOS = create<OSStore>((set) => ({
   closeFeatureTour: () => set({ activeTourAppId: null }),
   guestRemainingSeconds: null,
   guestLimitReached: false,
-  setGuestUsage: (remainingSeconds, limitReached) => set({ guestRemainingSeconds: remainingSeconds, guestLimitReached: limitReached }),
+  guestCheckingQuota: false,
+  setGuestUsage: (remainingSeconds, limitReached, checkingQuota) =>
+    set({ guestRemainingSeconds: remainingSeconds, guestLimitReached: limitReached, guestCheckingQuota: checkingQuota }),
   liteMode: readLiteModePref(),
   setLiteMode: (v) => {
     try { localStorage.setItem('kernos_lite_mode', String(v)); } catch { /* best-effort */ }
