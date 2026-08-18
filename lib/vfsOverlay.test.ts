@@ -166,6 +166,39 @@ describe('VfsOverlay', () => {
     });
   });
 
+  // vfs.ts itself enforces no name uniqueness at all — two real nodes can
+  // share a name under the same parent. Without this check, two staged
+  // creates for the same name would both "succeed" and leave two
+  // ambiguous nodes behind (the exact hazard a download tool racing itself
+  // would hit), or the second would stage fine and only fail at commit.
+  describe('create() rejects a name collision immediately', () => {
+    it('rejects a second staged create with the same name under the same parent', async () => {
+      const overlay = new VfsOverlay('u1');
+      await overlay.create('root', 'download.bin', 'file', 'first');
+
+      await expect(overlay.create('root', 'download.bin', 'file', 'second')).rejects.toThrow(/already staged/);
+    });
+
+    it('allows the same name under a DIFFERENT parent', async () => {
+      const overlay = new VfsOverlay('u1');
+      const dir = await overlay.create('root', 'subdir', 'directory');
+      await expect(overlay.create(dir.id, 'download.bin', 'file', 'in subdir')).resolves.toBeTruthy();
+      await expect(overlay.create('root', 'download.bin', 'file', 'in root')).resolves.toBeTruthy();
+    });
+
+    it('rejects a staged create colliding with a real, already-existing node', async () => {
+      const overlay = new VfsOverlay('u1');
+      // 'existing' (notes.md) is seeded under 'root' in beforeEach.
+      await expect(overlay.create('root', 'notes.md', 'file', 'x')).rejects.toThrow(/already exists/);
+      expect(overlay.hasPendingWrites).toBe(false); // nothing staged from the rejected attempt
+    });
+
+    it('does not reject a collision-free create', async () => {
+      const overlay = new VfsOverlay('u1');
+      await expect(overlay.create('root', 'new.txt', 'file', 'hi')).resolves.toBeTruthy();
+    });
+  });
+
   describe('commit() reports per-op results instead of aborting on the first failure', () => {
     it('reports a full success with no failures', async () => {
       const overlay = new VfsOverlay('u1');

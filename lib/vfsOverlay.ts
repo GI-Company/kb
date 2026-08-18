@@ -95,6 +95,24 @@ export class VfsOverlay {
   }
 
   async create(parentId: string, name: string, type: 'file' | 'directory', content = ''): Promise<FileNode> {
+    // Reject a name collision now rather than staging a create that was
+    // always going to fail at commit (or, worse, silently succeed as a
+    // second same-named node — vfs.ts enforces no uniqueness at all, so
+    // without this check two downloads racing to the same filename would
+    // both "succeed" and leave two ambiguous nodes behind with nothing to
+    // tell them apart). Checked against both this run's own staged
+    // siblings and the real VFS — an agent creating "download.bin" twice
+    // in one invocation, or once against a name that already exists for
+    // real, both fail the same way, immediately.
+    const stagedSibling = [...this.staged.values()].find(n => n.parentId === parentId && n.name === name);
+    if (stagedSibling) {
+      throw new Error(`"${name}" is already staged under this parent in this run (id "${stagedSibling.id}") — write to it instead of creating a duplicate.`);
+    }
+    const realSiblings = await vfs.list(parentId, this.userId);
+    if (realSiblings.some(n => n.name === name)) {
+      throw new Error(`"${name}" already exists under this parent — staging a second create here would only fail later, at commit.`);
+    }
+
     const tempId = nextTempId();
     const node: FileNode = { id: tempId, name, type, content, parentId };
     this.staged.set(tempId, node);
