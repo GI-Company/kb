@@ -137,16 +137,18 @@ return value becomes the result. Available inside the sandbox:
 - \`bnlm\` — train(corpus, steps?) / generate(prompt, maxTokens?) / score(text), the same in-browser local model bnlm.* tools use
 - \`agent\` — ask(personaId, prompt) for a one-off question to another persona (e.g. agent.ask("agent-coder", "..."))
 - \`bnlm.classify(text)\` — route text through the trained local classifier
+- \`net\` — download(url, parentId, name?) fetches a URL and stages it as a new file under parentId (named from the URL unless name is given). SSRF-guarded and pinned against DNS rebinding, same as the terminal's curl -O — but signed-in accounts only; a guest's call fails with a clear error rather than reaching the network. There is no other network access: no raw fetch, no reading a page's text into a string.
 - \`kernel\` — publish(topic, payload), restricted from destructive OS topics
 
-No raw imports, no eval, no network access, no DOM access, and no React —
-this runs on a Web Worker and returns data, not UI. Return plain values:
-functions and class instances cannot cross the sandbox boundary.
+No raw imports, no eval, no DOM access, and no React — this runs on a Web
+Worker and returns data, not UI. Return plain values: functions and class
+instances cannot cross the sandbox boundary.
 
 Runs with an 8-second timeout enforced by terminating the worker, so a
 runaway loop is genuinely stopped rather than merely reported. There is also
-a small budget on how many agent.ask/bnlm/vfs calls one execution may make —
-keep loops tight.
+a small budget on how many agent.ask/bnlm/vfs/net calls one execution may
+make — net.download in particular is capped at 3 per execution, tighter than
+the rest, since it's real outbound network egress. Keep loops tight.
 
 vfs writes/creates only become real, durable files if this execution
 finishes successfully — an error or timeout after a write discards it, so

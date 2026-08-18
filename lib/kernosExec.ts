@@ -34,7 +34,9 @@ import { localModel } from './localModel';
 import { localClassifier } from './localClassifier';
 import { fetchGroqText } from './groqFetch';
 import { VfsOverlay } from './vfsOverlay';
+import { supabase } from './supabaseClient';
 import type { Capability } from './terminalCapabilities';
+import type { FileNode } from '../types';
 
 export interface KernosExecResult {
   ok: boolean;
@@ -66,13 +68,18 @@ const MAX_TIMEOUT_MS = 20000;
 // have suppressed exactly the typo it's meant to catch: a misspelled key
 // creates a budget that silently never triggers (remaining[undefinedKey]--
 // is NaN, and NaN <= 0 is false), not a compile error.
-const _capabilityBudgetKeys: Capability[] = ['model:cloud', 'model:local', 'vfs'];
+const _capabilityBudgetKeys: Capability[] = ['model:cloud', 'model:local', 'vfs', 'net'];
 void _capabilityBudgetKeys;
 
 const CALL_BUDGET = {
   'model:cloud': 5,
   'model:local': 5,
   vfs: 50,
+  // Real outbound network egress, same class of risk as a terminal curl —
+  // deliberately the tightest budget here, tighter even than model:cloud:
+  // a download is meant to be a one-off, considered action inside a run,
+  // not something a loop reaches for.
+  net: 3,
   kernelPublish: 20,
 } as const;
 
@@ -95,9 +102,57 @@ function summarizeCall(ns: string, method: string, args: unknown[]): string {
     case 'bnlm.score': return `score(${String(args[0] ?? '').length} chars)`;
     case 'bnlm.classify': return `classify("${s(args[0])}")`;
     case 'agent.ask': return `ask(${s(args[0])}, "${s(args[1])}")`;
+    case 'net.download': return `download(${s(args[0])}${args[2] ? `, "${s(args[2])}"` : ''})`;
     case 'kernel.publish': return `publish(${s(args[0])})`;
     default: return `${ns}.${method}(…)`;
   }
+}
+
+/**
+ * The client-side half of an agent's download. The server that actually
+ * fetches and SSRF-validates the bytes (lib/networkCommands.ts, reached via
+ * POST /api/exec with cmd:'curl') has no VFS to write into — same server/
+ * client split as the terminal's curl -O/wget (see lib/terminalFs.ts's
+ * saveDownload, its close relative). Here the destination is the sandboxed
+ * script's own overlay rather than the terminal's cwd, so the download only
+ * becomes durable if the whole kernos.exec run finishes with ok:true — the
+ * exact same rule as every other vfs.create() call inside one.
+ *
+ * The signed-in gate isn't re-implemented here: /api/exec already refuses
+ * cmd:'curl' with a clear error for any request that arrives without a
+ * valid Bearer token, exactly as it does for a guest typing curl at the
+ * terminal. A guest session simply has no access_token to attach below, so
+ * this reaches that same denial for free.
+ *
+ * Exported (not a closure inside runKernosExec) so it's directly testable —
+ * mocking fetch and using a real VfsOverlay, without needing a Worker.
+ */
+export async function downloadIntoOverlay(
+  url: string,
+  parentId: string,
+  name: string | undefined,
+  overlay: VfsOverlay,
+  fetchImpl: typeof fetch = fetch
+): Promise<FileNode> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (supabase) {
+    const { data } = await supabase.auth.getSession();
+    if (data.session?.access_token) headers.authorization = `Bearer ${data.session.access_token}`;
+  }
+
+  const res = await fetchImpl('/api/exec', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ cmd: 'curl', args: name ? [url, '-o', name] : [url, '-O'] }),
+  });
+  const data = await res.json();
+  if (data.code !== 0) {
+    throw new Error(String(data.stderr || 'download failed').trim());
+  }
+  if (!data.download) {
+    throw new Error('download reported success but returned no content — this is a bug, not a network failure.');
+  }
+  return overlay.create(parentId, data.download.name, 'file', data.download.contentBase64, data.download.encoding);
 }
 
 export async function runKernosExec(
@@ -147,6 +202,12 @@ export async function runKernosExec(
     },
     agent: {
       ask: (personaId: string, prompt: string) => { spend('model:cloud'); return fetchGroqText(personaId, prompt); },
+    },
+    net: {
+      download: (url: string, parentId: string, name?: string) => {
+        spend('net');
+        return downloadIntoOverlay(url, parentId, name, overlay);
+      },
     },
     kernel: {
       publish: (topic: string, payload: unknown) => {

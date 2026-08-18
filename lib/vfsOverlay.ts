@@ -23,7 +23,7 @@
 import { vfs } from './vfs';
 import { FileNode } from '../types';
 
-type StagedWrite = { kind: 'write'; id: string; content: string };
+type StagedWrite = { kind: 'write'; id: string; content: string; encoding?: 'base64' };
 type StagedCreate = {
   kind: 'create';
   tempId: string;
@@ -32,6 +32,7 @@ type StagedCreate = {
   name: string;
   type: 'file' | 'directory';
   content: string;
+  encoding?: 'base64';
 };
 type StagedOp = StagedWrite | StagedCreate;
 
@@ -77,7 +78,7 @@ export class VfsOverlay {
     return [...real, ...stagedChildren];
   }
 
-  async write(id: string, content: string): Promise<boolean> {
+  async write(id: string, content: string, encoding?: 'base64'): Promise<boolean> {
     const existing = this.staged.get(id);
     if (!existing) {
       // Not something staged in this overlay yet, so it has to be a real,
@@ -89,12 +90,12 @@ export class VfsOverlay {
       const isReal = await vfs.exists(id, this.userId);
       if (!isReal) return false;
     }
-    this.staged.set(id, existing ? { ...existing, content } : { id, name: '', type: 'file', content });
-    this.ops.push({ kind: 'write', id, content });
+    this.staged.set(id, existing ? { ...existing, content, encoding } : { id, name: '', type: 'file', content, encoding });
+    this.ops.push({ kind: 'write', id, content, encoding });
     return true;
   }
 
-  async create(parentId: string, name: string, type: 'file' | 'directory', content = ''): Promise<FileNode> {
+  async create(parentId: string, name: string, type: 'file' | 'directory', content = '', encoding?: 'base64'): Promise<FileNode> {
     // Reject a name collision now rather than staging a create that was
     // always going to fail at commit (or, worse, silently succeed as a
     // second same-named node — vfs.ts enforces no uniqueness at all, so
@@ -114,9 +115,9 @@ export class VfsOverlay {
     }
 
     const tempId = nextTempId();
-    const node: FileNode = { id: tempId, name, type, content, parentId };
+    const node: FileNode = { id: tempId, name, type, content, parentId, encoding };
     this.staged.set(tempId, node);
-    this.ops.push({ kind: 'create', tempId, parentId, name, type, content });
+    this.ops.push({ kind: 'create', tempId, parentId, name, type, content, encoding });
     return node;
   }
 
@@ -164,7 +165,7 @@ export class VfsOverlay {
         }
         const realParentId = idMap.get(op.parentId) ?? op.parentId;
         try {
-          const node = await vfs.create(realParentId, op.name, op.type, this.userId, op.content);
+          const node = await vfs.create(realParentId, op.name, op.type, this.userId, op.content, undefined, op.encoding);
           idMap.set(op.tempId, node.id);
           committed++;
         } catch (err: any) {
@@ -178,7 +179,7 @@ export class VfsOverlay {
         }
         const realId = idMap.get(op.id) ?? op.id;
         try {
-          const ok = await vfs.write(realId, op.content, this.userId);
+          const ok = await vfs.write(realId, op.content, this.userId, op.encoding);
           if (ok) committed++;
           else failed.push({ op, error: 'vfs.write rejected it' });
         } catch (err: any) {

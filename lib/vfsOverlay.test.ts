@@ -1,22 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const state = { nodes: new Map<string, { id: string; name: string; type: string; content?: string; parentId?: string }>() };
+const state = { nodes: new Map<string, { id: string; name: string; type: string; content?: string; parentId?: string; encoding?: string }>() };
 let idCounter = 0;
 
 const vfsRead = vi.fn(async (id: string) => state.nodes.get(id)?.content ?? '');
 const vfsExists = vi.fn(async (id: string) => state.nodes.has(id));
-const vfsWrite = vi.fn(async (id: string, content: string) => {
+const vfsWrite = vi.fn(async (id: string, content: string, _userId?: string, encoding?: string) => {
   const node = state.nodes.get(id);
   if (!node) return false;
   node.content = content;
+  node.encoding = encoding;
   return true;
 });
 const vfsList = vi.fn(async (parentId: string) =>
   [...state.nodes.values()].filter(n => n.parentId === parentId)
 );
-const vfsCreate = vi.fn(async (parentId: string, name: string, type: 'file' | 'directory', _userId: string, content = '') => {
+const vfsCreate = vi.fn(async (parentId: string, name: string, type: 'file' | 'directory', _userId: string, content = '', _mountSource?: string, encoding?: string) => {
   const id = `real:${idCounter++}`;
-  const node = { id, name, type, content, parentId };
+  const node = { id, name, type, content, parentId, encoding };
   state.nodes.set(id, node);
   return node;
 });
@@ -86,7 +87,7 @@ describe('VfsOverlay', () => {
     await overlay.write('existing', 'changed');
     await overlay.commit();
 
-    expect(vfsWrite).toHaveBeenCalledWith('existing', 'changed', 'u1');
+    expect(vfsWrite).toHaveBeenCalledWith('existing', 'changed', 'u1', undefined);
     expect(state.nodes.get('existing')?.content).toBe('changed');
   });
 
@@ -95,7 +96,7 @@ describe('VfsOverlay', () => {
     await overlay.create('root', 'new.txt', 'file', 'hi');
     await overlay.commit();
 
-    expect(vfsCreate).toHaveBeenCalledWith('root', 'new.txt', 'file', 'u1', 'hi');
+    expect(vfsCreate).toHaveBeenCalledWith('root', 'new.txt', 'file', 'u1', 'hi', undefined, undefined);
     const created = [...state.nodes.values()].find(n => n.name === 'new.txt');
     expect(created?.content).toBe('hi');
   });
@@ -240,6 +241,46 @@ describe('VfsOverlay', () => {
       // vfs.create was never called a second time for the child against
       // the parent's raw (unresolved) tempId string.
       expect(vfsCreate).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // Added for kernos.exec's net.download tool — a downloaded file's bytes
+  // have to survive staging exactly as base64, not be silently reinterpreted
+  // as plain text along the way.
+  describe('encoding (base64 content) is threaded through staging and commit', () => {
+    it('create() with encoding stages a node carrying it, readable before commit', async () => {
+      const overlay = new VfsOverlay('u1');
+      const node = await overlay.create('root', 'logo.png', 'file', 'iVBORw0=', 'base64');
+      expect(node.encoding).toBe('base64');
+      expect(await overlay.read(node.id)).toBe('iVBORw0=');
+    });
+
+    it('commit() passes encoding through to the real vfs.create', async () => {
+      const overlay = new VfsOverlay('u1');
+      await overlay.create('root', 'logo.png', 'file', 'iVBORw0=', 'base64');
+      await overlay.commit();
+
+      expect(vfsCreate).toHaveBeenCalledWith('root', 'logo.png', 'file', 'u1', 'iVBORw0=', undefined, 'base64');
+      const created = [...state.nodes.values()].find(n => n.name === 'logo.png');
+      expect(created?.encoding).toBe('base64');
+    });
+
+    it('write() with encoding passes it through to the real vfs.write on commit', async () => {
+      const overlay = new VfsOverlay('u1');
+      await overlay.write('existing', 'AQIDBA==', 'base64');
+      await overlay.commit();
+
+      expect(vfsWrite).toHaveBeenCalledWith('existing', 'AQIDBA==', 'u1', 'base64');
+      expect(state.nodes.get('existing')?.encoding).toBe('base64');
+    });
+
+    it('a plain write (no encoding) still commits as plain text, unaffected by the new param', async () => {
+      const overlay = new VfsOverlay('u1');
+      await overlay.write('existing', 'plain text');
+      await overlay.commit();
+
+      expect(state.nodes.get('existing')?.content).toBe('plain text');
+      expect(state.nodes.get('existing')?.encoding).toBeUndefined();
     });
   });
 });

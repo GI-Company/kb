@@ -131,7 +131,7 @@ export const NL_TRANSLATOR_CAPABILITY: Capability = 'model:cloud';
  * second source of truth for the limits themselves.
  */
 export const AGENT_TOOL_CAPABILITIES: Record<string, Capability[]> = {
-  'kernos.exec': ['vfs', 'model:local', 'model:cloud'],
+  'kernos.exec': ['vfs', 'model:local', 'model:cloud', 'net'],
   'bnlm.train': ['model:local'],
   'bnlm.generate': ['model:local'],
   'bnlm.score': ['model:local'],

@@ -70,6 +70,7 @@ self.onmessage = async (event: MessageEvent) => {
     const vfs = makeNamespace('vfs');
     const bnlm = makeNamespace('bnlm');
     const agent = makeNamespace('agent');
+    const net = makeNamespace('net');
     // publish is fire-and-forget from here; subscribe is deliberately absent
     // from the HOST's handler table (not this list, which no longer
     // exists) — a callback can't survive a terminate() and would leak a
@@ -91,7 +92,7 @@ self.onmessage = async (event: MessageEvent) => {
     ) => (...args: unknown[]) => Promise<unknown>;
 
     const fn = new AsyncFunction(
-      'kernel', 'vfs', 'bnlm', 'agent', 'console',
+      'kernel', 'vfs', 'bnlm', 'agent', 'net', 'console',
       `
         ${msg.code}
         if (typeof __kernosExecExport === 'function') {
@@ -103,7 +104,7 @@ self.onmessage = async (event: MessageEvent) => {
       `
     );
 
-    const value = await fn(kernel, vfs, bnlm, agent, sandboxConsole);
+    const value = await fn(kernel, vfs, bnlm, agent, net, sandboxConsole);
 
     // The result crosses by structured clone, so anything unclonable (a
     // function, a class instance, a DOM node) would throw on postMessage and
