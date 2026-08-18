@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useContextMenu } from './ContextMenu';
 import { formatRemaining } from '../../lib/guestUsage';
 import { getSetting, subscribeSettings } from '../../lib/settings';
+import { useWindowControlsOverlay } from '../../lib/windowControlsOverlay';
 
 // Guest-only daily quota countdown (see lib/guestUsage.ts / api/guest-usage.ts).
 // Renders nothing once guestRemainingSeconds is null — real accounts, and
@@ -79,29 +80,6 @@ const Clock = () => {
   );
 };
 
-// Window Controls Overlay: desktop-only, and only real once the app is
-// actually installed with display_override: window-controls-overlay
-// honored (see public/manifest.webmanifest) — a normal browser tab, and
-// most installed contexts before the user's browser/OS supports this,
-// report navigator.windowControlsOverlay as undefined or .visible: false,
-// and this hook (and the component below reading it) is inert either way.
-// Not verifiable from this sandboxed browser session — WCO can only ever
-// activate for a real, actually-installed standalone window, which this
-// automated environment has no way to become. Written to be checked by
-// actually installing the app.
-function useWindowControlsOverlay() {
-  const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    const wco = (navigator as any).windowControlsOverlay;
-    if (!wco) return;
-    const update = () => setVisible(wco.visible);
-    update();
-    wco.addEventListener('geometrychange', update);
-    return () => wco.removeEventListener('geometrychange', update);
-  }, []);
-  return visible;
-}
-
 // Draws Kernos's own top strip into the OS title bar's space instead of
 // leaving it blank behind the window controls — the whole point of
 // declaring window-controls-overlay rather than just standalone. Sized
@@ -114,7 +92,7 @@ function useWindowControlsOverlay() {
 // native title bar; interactive children need the no-drag override below
 // or they'd become part of the drag surface instead of clickable.
 const TitleBarOverlay: React.FC = () => {
-  const visible = useWindowControlsOverlay();
+  const { visible } = useWindowControlsOverlay();
   if (!visible) return null;
   return (
     <div

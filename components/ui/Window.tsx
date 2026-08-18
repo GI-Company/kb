@@ -5,6 +5,7 @@ import { X, Minus, Square, Terminal, Monitor, FileCode, HardDrive, Cpu, Workflow
 import { motion, AnimatePresence } from 'framer-motion';
 import { FEATURE_TOURS } from '../../lib/featureTours';
 import { getSetting, subscribeSettings } from '../../lib/settings';
+import { useWindowControlsOverlay } from '../../lib/windowControlsOverlay';
 
 // lib/settings.ts's reduceMotion is a separate toggle from Lite Mode (which
 // also skips the boot sequence and is about overall speed, not motion
@@ -130,6 +131,13 @@ export const Window: React.FC<WindowProps> = ({ data, children, liteMode }) => {
   // than hardcoded pixels so it stays correct across rotation, viewport
   // changes, and notched devices without the two components needing to
   // agree on numbers any other way than "read the same CSS env vars".
+  // A maximized window used to hardcode top: 0 — fine in an ordinary tab,
+  // but that put its own title bar (with its own close/minimize/maximize
+  // controls) directly underneath Taskbar.tsx's WCO title-bar strip in an
+  // installed, window-controls-overlay window. wcoHeight is 0 in every
+  // other context, so this is a no-op there.
+  const { height: wcoHeight } = useWindowControlsOverlay();
+
   const style = isMobile
     ? {
         top: 'calc(env(safe-area-inset-top, 0px) + 28px)',
@@ -138,7 +146,7 @@ export const Window: React.FC<WindowProps> = ({ data, children, liteMode }) => {
         height: 'calc(100% - env(safe-area-inset-top, 0px) - 28px - env(safe-area-inset-bottom, 0px) - 64px)',
       }
     : data.isMaximized
-    ? { top: 0, left: 0, width: '100%', height: 'calc(100% - 52px)' }
+    ? { top: wcoHeight, left: 0, width: '100%', height: `calc(100% - 52px - ${wcoHeight}px)` }
     : { top: data.y, left: data.x, width: data.width, height: data.height };
 
   return (

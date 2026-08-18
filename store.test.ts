@@ -108,3 +108,53 @@ describe('Force Desktop Mode overrides the device-detected isMobile', () => {
     expect(useOS.getState().isMobile).toBe(false);
   });
 });
+
+// A window used to be draggable all the way to y: 0, which put its own
+// title bar (with its own close/minimize/maximize controls) underneath
+// Taskbar.tsx's WCO title-bar strip once window-controls-overlay was
+// active — see lib/windowControlsOverlay.ts. moveWindow's Y clamp now
+// respects that area's height instead of a hardcoded 0.
+describe('moveWindow clamps Y to the WCO title bar height when it is active', () => {
+  afterEach(() => {
+    delete (navigator as any).windowControlsOverlay;
+  });
+
+  function stubWco(height: number) {
+    (navigator as any).windowControlsOverlay = {
+      visible: true,
+      getTitlebarAreaRect: () => ({ height }),
+    };
+  }
+
+  it('still clamps to 0 when WCO is not active (today\'s behavior, unchanged)', () => {
+    useOS.getState().openWindow('terminal');
+    const id = useOS.getState().activeWindowId!;
+    useOS.getState().moveWindow(id, 100, -50);
+    expect(useOS.getState().windows.find(w => w.id === id)!.y).toBe(0);
+  });
+
+  it('clamps to the WCO title bar height instead of 0 once WCO is active', () => {
+    stubWco(33);
+    useOS.getState().openWindow('terminal');
+    const id = useOS.getState().activeWindowId!;
+    useOS.getState().moveWindow(id, 100, 0);
+    expect(useOS.getState().windows.find(w => w.id === id)!.y).toBe(33);
+  });
+
+  it('does not clamp a drag that is already below the title bar area', () => {
+    stubWco(33);
+    useOS.getState().openWindow('terminal');
+    const id = useOS.getState().activeWindowId!;
+    useOS.getState().moveWindow(id, 100, 200);
+    expect(useOS.getState().windows.find(w => w.id === id)!.y).toBe(200);
+  });
+
+  it('reverts to clamping at 0 once WCO reports not visible again', () => {
+    stubWco(33);
+    useOS.getState().openWindow('terminal');
+    const id = useOS.getState().activeWindowId!;
+    (navigator as any).windowControlsOverlay.visible = false;
+    useOS.getState().moveWindow(id, 100, 0);
+    expect(useOS.getState().windows.find(w => w.id === id)!.y).toBe(0);
+  });
+});

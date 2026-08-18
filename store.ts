@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { WindowState, DesktopShortcut } from './types';
 import { getSetting, subscribeSettings } from './lib/settings';
+import { getTitlebarOverlayHeight } from './lib/windowControlsOverlay';
 
 interface OSStore {
   windows: WindowState[];
@@ -242,11 +243,17 @@ export const useOS = create<OSStore>((set) => ({
     const viewportW = typeof window !== 'undefined' ? window.innerWidth : 1280;
     const viewportH = typeof window !== 'undefined' ? window.innerHeight - 52 : 800;
     const minVisible = 80;
+    // 0 in every non-WCO context (an ordinary tab, or an installed window
+    // before WCO is honored) — see lib/windowControlsOverlay.ts. Only when
+    // WCO is actually active does this become nonzero, keeping a dragged
+    // window's own title bar (and its close/minimize/maximize controls)
+    // from ending up rendered underneath Taskbar.tsx's title-bar strip.
+    const minY = getTitlebarOverlayHeight();
     return {
       windows: state.windows.map(w => {
         if (w.id !== id) return w;
         const clampedX = Math.min(Math.max(x, minVisible - w.width), viewportW - minVisible);
-        const clampedY = Math.min(Math.max(y, 0), Math.max(0, viewportH - 40));
+        const clampedY = Math.min(Math.max(y, minY), Math.max(minY, viewportH - 40));
         return { ...w, x: clampedX, y: clampedY };
       })
     };
