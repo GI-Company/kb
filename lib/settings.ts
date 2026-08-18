@@ -52,6 +52,14 @@ export interface KernosSettings {
   // identifyUser/trackEvent calls. No effect if analytics was never
   // configured (VITE_POSTHOG_KEY unset) — nothing to opt out of.
   analyticsOptOut: boolean;
+
+  // store.ts's computeIsMobile() decides the mobile (full-screen,
+  // non-draggable single-app) layout from viewport width and touch
+  // heuristics — this setting overrides that decision to "no" regardless
+  // of what the device looks like. store.ts's isMobile field is the AND of
+  // both; every existing consumer (Taskbar.tsx, Window.tsx) already just
+  // reads that one field, so nothing about them needed to change.
+  forceDesktopMode: boolean;
 }
 
 export const SETTINGS_DEFAULTS: KernosSettings = {
@@ -62,6 +70,7 @@ export const SETTINGS_DEFAULTS: KernosSettings = {
   showBootSequence: true,
   terminalFontSize: 13,
   analyticsOptOut: false,
+  forceDesktopMode: false,
 };
 
 const STORAGE_KEY = 'kernos_settings';

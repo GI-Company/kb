@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { computeIsMobile, MOBILE_BREAKPOINT } from './store';
+import { computeIsMobile, MOBILE_BREAKPOINT, useOS } from './store';
+import { setSetting } from './lib/settings';
 
 // Reported live: "I can't do anything... all I see is the time and
 // countdown timer" — then, separately, "needs to work in landscape mode".
@@ -58,5 +59,52 @@ describe('computeIsMobile', () => {
   it('stays desktop mode for an ordinary desktop viewport', () => {
     stubViewport(1440, 900, 0);
     expect(computeIsMobile()).toBe(false);
+  });
+});
+
+// Settings' "Force Desktop Mode" — store.ts's isMobile field is the AND of
+// computeIsMobile() and this setting, kept live via a subscribeSettings
+// listener rather than only recomputed on resize/rotation, so toggling it
+// takes effect immediately without the user having to also resize the
+// window to trigger a recheck.
+describe('Force Desktop Mode overrides the device-detected isMobile', () => {
+  afterEach(() => {
+    setSetting('forceDesktopMode', false);
+    stubViewport(1280, 800, 0);
+    window.dispatchEvent(new Event('resize'));
+  });
+
+  it('a mobile-shaped viewport reports isMobile true by default', () => {
+    stubViewport(375, 812, 0);
+    window.dispatchEvent(new Event('resize'));
+    expect(useOS.getState().isMobile).toBe(true);
+  });
+
+  it('enabling Force Desktop Mode flips isMobile to false immediately, without a resize', () => {
+    stubViewport(375, 812, 0);
+    window.dispatchEvent(new Event('resize'));
+    expect(useOS.getState().isMobile).toBe(true);
+
+    setSetting('forceDesktopMode', true);
+    expect(useOS.getState().isMobile).toBe(false);
+  });
+
+  it('disabling it again restores mobile detection on the next resize', () => {
+    stubViewport(375, 812, 0);
+    setSetting('forceDesktopMode', true);
+    window.dispatchEvent(new Event('resize'));
+    expect(useOS.getState().isMobile).toBe(false);
+
+    setSetting('forceDesktopMode', false);
+    expect(useOS.getState().isMobile).toBe(true);
+  });
+
+  it('has no effect on an already-desktop-shaped viewport', () => {
+    stubViewport(1440, 900, 0);
+    window.dispatchEvent(new Event('resize'));
+    expect(useOS.getState().isMobile).toBe(false);
+
+    setSetting('forceDesktopMode', true);
+    expect(useOS.getState().isMobile).toBe(false);
   });
 });

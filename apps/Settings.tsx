@@ -178,6 +178,12 @@ export const SettingsApp: React.FC = () => {
 
         <div className="h-px bg-white/5 my-3" />
 
+        <Row label="Force Desktop Mode" hint="Use the full draggable multi-window desktop layout even on a small or touch screen, instead of the simplified full-screen single-app mode. Windows aren't resized for touch, so dragging and resizing can be fiddly on a phone.">
+          <Toggle checked={settings.forceDesktopMode} onChange={v => update('forceDesktopMode', v)} />
+        </Row>
+
+        <div className="h-px bg-white/5 my-3" />
+
         <Row label="Interactive Walkthrough" hint="Replay the guided tour of the taskbar apps.">
           <button
             onClick={openWalkthrough}

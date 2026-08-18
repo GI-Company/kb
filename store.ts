@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { WindowState, DesktopShortcut } from './types';
+import { getSetting, subscribeSettings } from './lib/settings';
 
 interface OSStore {
   windows: WindowState[];
@@ -113,6 +114,17 @@ export function computeIsMobile(): boolean {
   return isTouchPrimary && shortEdge < PHONE_SHORT_EDGE_MAX;
 }
 
+// The single source every isMobile write below goes through — folds in
+// Settings' "Force Desktop Mode" without touching computeIsMobile() itself,
+// which is a carefully-tuned device heuristic (see its own comment) that
+// has nothing to do with a user's explicit override. Every existing
+// consumer of store.ts's isMobile field (Taskbar.tsx, Window.tsx) reads
+// this one combined value, so neither needed a change to respect the
+// setting.
+function computeEffectiveIsMobile(): boolean {
+  return computeIsMobile() && !getSetting('forceDesktopMode');
+}
+
 export const useOS = create<OSStore>((set) => ({
   windows: [],
   shortcuts: [],
@@ -134,7 +146,7 @@ export const useOS = create<OSStore>((set) => ({
     try { localStorage.setItem('kernos_lite_mode', String(v)); } catch { /* best-effort */ }
     set({ liteMode: v });
   },
-  isMobile: computeIsMobile(),
+  isMobile: computeEffectiveIsMobile(),
   setIsMobile: (v) => set({ isMobile: v }),
 
   updateAvailable: false,
@@ -278,13 +290,21 @@ export const useOS = create<OSStore>((set) => ({
 // useOS(s => s.isMobile) and re-renders like any other state change.
 if (typeof window !== 'undefined') {
   window.addEventListener('resize', () => {
-    useOS.getState().setIsMobile(computeIsMobile());
+    useOS.getState().setIsMobile(computeEffectiveIsMobile());
   });
   // Some mobile browsers have historically fired 'orientationchange'
   // measurably before 'resize' settles to the rotated dimensions (or, on
   // older WebViews, not fired a plain resize at all on rotation) — cheap
   // to also listen directly rather than trust resize alone to cover it.
   window.addEventListener('orientationchange', () => {
-    useOS.getState().setIsMobile(computeIsMobile());
+    useOS.getState().setIsMobile(computeEffectiveIsMobile());
+  });
+  // Toggling Force Desktop Mode in Settings should switch layouts
+  // immediately, not wait for the next resize/rotation — subscribeSettings
+  // fires on every settings change, not just this one, but recomputing
+  // isMobile is cheap enough that filtering to just forceDesktopMode isn't
+  // worth the extra bookkeeping.
+  subscribeSettings(() => {
+    useOS.getState().setIsMobile(computeEffectiveIsMobile());
   });
 }
