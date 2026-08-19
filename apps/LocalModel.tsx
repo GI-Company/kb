@@ -2,7 +2,7 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { localModel, DEFAULT_LOCAL_MODEL_CONFIG, MixerType } from '../lib/localModel';
 import { runHistoryStore, genHistoryStore, RunHistoryEntry, GenHistoryEntry } from '../lib/localModelHistory';
 import { SavedModelMeta } from '../lib/modelStore';
-import { fetchGroqText } from '../lib/groqFetch';
+import { generateProseCorpus } from '../lib/datasetGen';
 import { trackEvent } from '../lib/analytics';
 import { getCurrentUserId } from '../lib/auth';
 import { Cpu, Play, Sparkles, Download, RotateCcw, Loader2, Save, FolderOpen, Trash2, Wand2, Gauge } from 'lucide-react';
@@ -17,13 +17,6 @@ When the bird's wing healed, it flew to the top of the workshop and looked back 
 
 interface LogLine { id: string; text: string; kind: 'info' | 'error' | 'success' }
 type BottomTab = 'log' | 'runs' | 'generations';
-
-function generateDatasetViaGroq(topic: string, count: number): Promise<string> {
-  return fetchGroqText(
-    'agent-coder',
-    `Generate exactly ${count} short children's stories in the TinyStories style (simple sentences, small vocabulary, 4-8 sentences each) about: ${topic}. Separate each story with a single blank line. Output ONLY the stories themselves — no titles, no numbering, no markdown formatting, no commentary before or after.`
-  );
-}
 
 export const LocalModelApp: React.FC = () => {
   const [corpus, setCorpus] = useState(SAMPLE_CORPUS);
@@ -193,7 +186,7 @@ export const LocalModelApp: React.FC = () => {
     setIsGeneratingDataset(true);
     log(`Asking Groq to generate ${datasetCount} training stories about "${datasetTopic}"...`);
     try {
-      const text = await generateDatasetViaGroq(datasetTopic, datasetCount);
+      const text = await generateProseCorpus(datasetTopic, datasetCount);
       if (!text) throw new Error('Groq returned an empty response.');
       setCorpus(text);
       log(`Groq generated a new training corpus (${text.length} chars). Review it below, then Initialize.`, 'success');

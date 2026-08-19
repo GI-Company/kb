@@ -148,4 +148,7 @@ export const AGENT_TOOL_CAPABILITIES: Record<string, Capability[]> = {
   // see lib/datasetGen.ts's generateLabeledExamples — so unlike every
   // other bnlm.* tool here, this one genuinely spends model:cloud too.
   'bnlm.buildClassifier': ['model:cloud', 'model:local'],
+  // Same shape as bnlm.buildClassifier: generateProseCorpus spends Groq
+  // once to write the training stories, then training itself is local.
+  'bnlm.buildGenerative': ['model:cloud', 'model:local'],
 };

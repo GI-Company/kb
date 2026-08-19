@@ -6,7 +6,7 @@
 
 import { localModel } from './localModel';
 import { localClassifier, LabeledExample } from './localClassifier';
-import { generateLabeledExamples, describeDataset } from './datasetGen';
+import { generateLabeledExamples, describeDataset, generateProseCorpus } from './datasetGen';
 
 export interface ToolCall {
   tool: string;
@@ -47,6 +47,7 @@ export const LOCAL_MODEL_TOOL_NAMES = [
   'bnlm.train',
   'bnlm.generate',
   'bnlm.score',
+  'bnlm.buildGenerative',
   'bnlm.buildClassifier',
   'bnlm.trainClassifier',
   'bnlm.classify',
@@ -105,6 +106,27 @@ export async function runLocalModelTool(toolCall: ToolCall): Promise<ToolRunResu
       `Score for that text against the trained model: loss ${result.loss.toFixed(3)}, ` +
       `perplexity ${result.perplexity.toFixed(2)} (lower = closer to what it learned), ` +
       `over ${result.tokensScored} tokens.`
+    };
+  }
+
+  // Generates its own training corpus via Groq, then trains locally — the
+  // generative counterpart to bnlm.buildClassifier below. Groq is spent
+  // once, here, writing the stories; the trained model then runs with no
+  // further cloud calls at all.
+  if (toolCall.tool === 'bnlm.buildGenerative') {
+    const { topic, count = 30, steps = 200 } = toolCall.args || {};
+    if (!topic || typeof topic !== 'string') {
+      throw new Error('bnlm.buildGenerative needs a "topic" describing what to generate stories about.');
+    }
+    const clampedCount = Math.min(Math.max(Math.round(Number(count) || 30), 5), 100);
+    const clampedSteps = Math.min(Math.max(Math.round(Number(steps) || 200), 1), 500);
+    const corpus = await generateProseCorpus(topic, clampedCount);
+    if (!corpus.trim()) throw new Error('Groq returned an empty corpus.');
+    const { init, train } = await localModel.ensureInitAndTrain(corpus, clampedSteps);
+    return { text:
+      `Generated a ${clampedCount}-story corpus about "${topic}" via Groq, then trained a local model ` +
+      `right here in the browser: ${init.paramCount.toLocaleString()} params, vocab ${init.vocabSize}, ` +
+      `${train.steps} steps, final loss ${train.finalLoss.toFixed(3)}.`
     };
   }
 

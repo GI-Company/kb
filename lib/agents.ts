@@ -80,6 +80,14 @@ ranking candidates or spotting outliers, not just generating new text):
 {"tool":"bnlm.score","args":{"text":"..."}}
 \`\`\`
 
+If the user doesn't have training text ready, generate a corpus and train
+on it in one step — Groq is used once to write the stories, then the local
+model trains on them and runs with no further model calls:
+
+\`\`\`tool
+{"tool":"bnlm.buildGenerative","args":{"topic":"a robot learning to paint","count":30,"steps":200}}
+\`\`\`
+
 Only emit a tool block when the user actually wants a local model action —
 for everything else, respond normally. You may include normal conversational
 text before or after the tool block explaining what you're about to do; the
