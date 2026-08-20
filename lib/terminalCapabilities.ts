@@ -158,4 +158,8 @@ export const AGENT_TOOL_CAPABILITIES: Record<string, Capability[]> = {
   // Reads the signed-in user's VFS to rank files against the query — the
   // only bnlm.* tool that touches vfs at all.
   'bnlm.semanticSearch': ['model:local', 'vfs'],
+  // Same shape again: generateTaggedExamples spends Groq once to write
+  // marked-up sentences, then the tagger trains and runs entirely locally.
+  'bnlm.buildTagger': ['model:cloud', 'model:local'],
+  'bnlm.tag': ['model:local'],
 };

@@ -14,9 +14,11 @@ vi.mock('./localModel', () => ({
 
 const generateProseCorpus = vi.fn();
 const generateParaphrasePairs = vi.fn();
+const generateTaggedExamples = vi.fn();
 vi.mock('./datasetGen', () => ({
   generateProseCorpus: (...a: any[]) => generateProseCorpus(...a),
   generateParaphrasePairs: (...a: any[]) => generateParaphrasePairs(...a),
+  generateTaggedExamples: (...a: any[]) => generateTaggedExamples(...a),
   generateLabeledExamples: vi.fn(),
   describeDataset: vi.fn(),
 }));
@@ -51,6 +53,17 @@ const resolveDir = vi.fn();
 vi.mock('./terminalFs', () => ({
   resolveDir: (...a: any[]) => resolveDir(...a),
   ROOT_CWD: [],
+}));
+
+let taggerReady = false;
+const taggerEnsureInitAndTrain = vi.fn();
+const taggerTag = vi.fn();
+vi.mock('./localTagger', () => ({
+  localTagger: {
+    get isReady() { return taggerReady; },
+    ensureInitAndTrain: (...a: any[]) => taggerEnsureInitAndTrain(...a),
+    tag: (...a: any[]) => taggerTag(...a),
+  },
 }));
 
 import { runLocalModelTool } from './localModelTools';
@@ -269,5 +282,84 @@ describe('bnlm.semanticSearch', () => {
 
     expect(result.text).toMatch(/no readable/i);
     expect(embedderEmbed).not.toHaveBeenCalled();
+  });
+});
+
+describe('bnlm.buildTagger', () => {
+  beforeEach(() => {
+    generateTaggedExamples.mockReset();
+    taggerEnsureInitAndTrain.mockReset();
+  });
+
+  it('rejects a call missing tags, defaultTag, or domain', async () => {
+    await expect(runLocalModelTool({ tool: 'bnlm.buildTagger', args: {} }))
+      .rejects.toThrow(/tags/i);
+    await expect(runLocalModelTool({ tool: 'bnlm.buildTagger', args: { tags: ['risky'] } }))
+      .rejects.toThrow(/defaultTag/i);
+    await expect(runLocalModelTool({ tool: 'bnlm.buildTagger', args: { tags: ['risky'], defaultTag: 'safe' } }))
+      .rejects.toThrow(/domain/i);
+    expect(generateTaggedExamples).not.toHaveBeenCalled();
+  });
+
+  it('generates tagged examples via Groq once, then trains the tagger locally', async () => {
+    const examples = [{ text: 'rm now', tags: ['risky', 'risky', 'safe', 'safe', 'safe', 'safe'] }];
+    generateTaggedExamples.mockResolvedValue(examples);
+    taggerEnsureInitAndTrain.mockResolvedValue({
+      init: { vocabSize: 10, paramCount: 999, tagLabels: ['risky', 'safe'], examples: 1 },
+      train: { steps: 200, finalLoss: 0.4, lossHistory: [], paramCount: 999, vocabSize: 10, tagLabels: ['risky', 'safe'] },
+    });
+
+    const result = await runLocalModelTool({
+      tool: 'bnlm.buildTagger',
+      args: { tags: ['risky'], defaultTag: 'safe', domain: 'shell commands', count: 10, steps: 200 },
+    });
+
+    expect(generateTaggedExamples).toHaveBeenCalledWith(['risky'], 'safe', 'shell commands', 10);
+    expect(taggerEnsureInitAndTrain).toHaveBeenCalledWith(examples, 200);
+    expect(result.text).toContain('shell commands');
+    expect(result.text).toContain('999');
+    expect(result.text).toContain('risky, safe');
+  });
+
+  it('refuses to train when Groq returns no usable examples', async () => {
+    generateTaggedExamples.mockResolvedValue([]);
+
+    await expect(runLocalModelTool({
+      tool: 'bnlm.buildTagger',
+      args: { tags: ['risky'], defaultTag: 'safe', domain: 'x' },
+    })).rejects.toThrow(/no usable/i);
+
+    expect(taggerEnsureInitAndTrain).not.toHaveBeenCalled();
+  });
+});
+
+describe('bnlm.tag', () => {
+  beforeEach(() => {
+    taggerReady = true;
+    taggerTag.mockReset();
+  });
+
+  it('rejects a call with no text', async () => {
+    await expect(runLocalModelTool({ tool: 'bnlm.tag', args: {} }))
+      .rejects.toThrow(/text/i);
+  });
+
+  it('requires a trained tagger', async () => {
+    taggerReady = false;
+    await expect(runLocalModelTool({ tool: 'bnlm.tag', args: { text: 'rm -rf /' } }))
+      .rejects.toThrow(/buildTagger/);
+  });
+
+  it('reports every tagged span from the trained tagger', async () => {
+    taggerTag.mockResolvedValue([
+      { tag: 'risky', start: 0, end: 8, text: 'rm -rf /' },
+      { tag: 'safe', start: 8, end: 24, text: ' deletes everything' },
+    ]);
+
+    const result = await runLocalModelTool({ tool: 'bnlm.tag', args: { text: 'rm -rf / deletes everything' } });
+
+    expect(taggerTag).toHaveBeenCalledWith('rm -rf / deletes everything');
+    expect(result.text).toContain('[risky] "rm -rf /"');
+    expect(result.text).toContain('[safe] " deletes everything"');
   });
 });

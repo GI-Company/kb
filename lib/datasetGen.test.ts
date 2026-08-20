@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseLabeledExamples, describeDataset, parseParaphrasePairs } from './datasetGen';
+import { parseLabeledExamples, describeDataset, parseParaphrasePairs, parseTaggedText } from './datasetGen';
 
 const LABELS = ['files', 'network'];
 
@@ -102,6 +102,73 @@ describe('parseParaphrasePairs', () => {
   it('drops duplicate pairs, case-insensitively', () => {
     const out = parseParaphrasePairs('a | b\nA | B\na | b');
     expect(out).toHaveLength(1);
+  });
+});
+
+describe('parseTaggedText', () => {
+  const TAGS = ['risky'];
+  const DEFAULT = 'safe';
+
+  it('strips markup and tags the marked span, leaving the rest as the default tag', () => {
+    const [ex] = parseTaggedText('delete [risky]rm -rf /[/risky] now', TAGS, DEFAULT);
+    expect(ex.text).toBe('delete rm -rf / now');
+    expect(ex.tags).toHaveLength(ex.text.length);
+    expect(ex.tags.slice(0, 7)).toEqual(Array(7).fill('safe')); // "delete "
+    expect(ex.tags.slice(7, 15)).toEqual(Array(8).fill('risky')); // "rm -rf /"
+    expect(ex.tags.slice(15)).toEqual(Array(4).fill('safe')); // " now"
+  });
+
+  it('tags an unmarked line entirely with the default tag', () => {
+    const [ex] = parseTaggedText('just a normal sentence', TAGS, DEFAULT);
+    expect(ex.text).toBe('just a normal sentence');
+    expect(ex.tags.every(t => t === 'safe')).toBe(true);
+  });
+
+  it('handles multiple spans of different tags on one line', () => {
+    const [ex] = parseTaggedText(
+      '[urgent]call now[/urgent] about the [risky]expired cert[/risky] please',
+      ['urgent', 'risky'],
+      'normal'
+    );
+    expect(ex.text).toBe('call now about the expired cert please');
+    expect(ex.tags.slice(0, 8)).toEqual(Array(8).fill('urgent')); // "call now"
+    expect(ex.tags.slice(8, 19)).toEqual(Array(11).fill('normal')); // " about the "
+    expect(ex.tags.slice(19, 31)).toEqual(Array(12).fill('risky')); // "expired cert"
+    expect(ex.tags.slice(31)).toEqual(Array(7).fill('normal')); // " please"
+  });
+
+  it('folds an unrecognized tag name into the default tag rather than dropping the line', () => {
+    const [ex] = parseTaggedText('[bogus]some text[/bogus] and more', TAGS, DEFAULT);
+    expect(ex.text).toBe('some text and more');
+    expect(ex.tags.every(t => t === 'safe')).toBe(true);
+  });
+
+  it('matches tag names case-insensitively', () => {
+    const [ex] = parseTaggedText('[RISKY]bad stuff[/RISKY]', TAGS, DEFAULT);
+    expect(ex.tags.every(t => t === 'risky')).toBe(true);
+  });
+
+  it('strips numbered-list and bullet artifacts from the start of a line', () => {
+    const out = parseTaggedText('1. [risky]drop table[/risky] users\n- another [risky]bad[/risky] one', TAGS, DEFAULT);
+    expect(out).toHaveLength(2);
+    expect(out[0].text).toBe('drop table users');
+    expect(out[1].text).toBe('another bad one');
+  });
+
+  it('skips blank lines', () => {
+    const out = parseTaggedText('one line\n\n\nanother line', TAGS, DEFAULT);
+    expect(out).toHaveLength(2);
+  });
+
+  it('keeps every tags array the same length as its text, across a mixed batch', () => {
+    const raw = [
+      'no markup here',
+      '[risky]all of this[/risky]',
+      'mixed [risky]middle[/risky] parts',
+    ].join('\n');
+    for (const ex of parseTaggedText(raw, TAGS, DEFAULT)) {
+      expect(ex.tags).toHaveLength(Array.from(ex.text).length);
+    }
   });
 });
 

@@ -146,6 +146,27 @@ this is the one bnlm.* tool that reads the VFS:
 
 \`\`\`tool
 {"tool":"bnlm.semanticSearch","args":{"query":"notes about the login bug","path":"/","topK":5}}
+\`\`\`
+
+There is also a TAGGER, for a fourth kind of question: "which PARTS of this
+matter?" Use it to flag specific spans within a longer piece of text — e.g.
+which words carry an intent, or which part of a command looks dangerous —
+rather than judging the whole input at once like the classifier does.
+
+Generate marked-up training sentences and train in one step — Groq is used
+once to write example sentences with the target spans wrapped in
+[tagname]...[/tagname], and the tagger then runs with no further model
+calls:
+
+\`\`\`tool
+{"tool":"bnlm.buildTagger","args":{"tags":["risky"],"defaultTag":"safe","domain":"shell commands a user might type","count":25,"steps":300}}
+\`\`\`
+
+Then tag new text — the result is a list of tagged spans, not one label for
+the whole input:
+
+\`\`\`tool
+{"tool":"bnlm.tag","args":{"text":"rm -rf / will delete everything on disk"}}
 \`\`\``;
 
 // Appended alongside BNLM_TOOL_CONTRACT — a general escape hatch for

@@ -7,7 +7,8 @@
 import { localModel } from './localModel';
 import { localClassifier, LabeledExample } from './localClassifier';
 import { localEmbedder } from './localEmbedder';
-import { generateLabeledExamples, describeDataset, generateProseCorpus, generateParaphrasePairs } from './datasetGen';
+import { localTagger } from './localTagger';
+import { generateLabeledExamples, describeDataset, generateProseCorpus, generateParaphrasePairs, generateTaggedExamples } from './datasetGen';
 import { cosineSimilarity } from '../src/bnlm/embed.js';
 import { vfs } from './vfs';
 import { resolveDir, ROOT_CWD } from './terminalFs';
@@ -58,6 +59,8 @@ export const LOCAL_MODEL_TOOL_NAMES = [
   'bnlm.buildEmbeddingIndex',
   'bnlm.similarity',
   'bnlm.semanticSearch',
+  'bnlm.buildTagger',
+  'bnlm.tag',
 ] as const;
 
 export function extractToolCall(text: string): ToolCall | null {
@@ -328,6 +331,48 @@ export async function runLocalModelTool(toolCall: ToolCall, userId?: string): Pr
         contributions,
       },
     };
+  }
+
+  // ── Tagger tools ────────────────────────────────────────────────────
+  // Answers "which PARTS of this matter?" — supervised per-character
+  // labels in one forward pass, rather than one label for the whole input
+  // (the classifier) or a pooled similarity score (the embedder).
+
+  if (toolCall.tool === 'bnlm.buildTagger') {
+    const { tags, defaultTag, domain, count = 20, steps = 300 } = toolCall.args || {};
+    if (!Array.isArray(tags) || tags.length === 0) {
+      throw new Error('bnlm.buildTagger needs a "tags" array with at least 1 tag to mark up.');
+    }
+    if (!defaultTag || typeof defaultTag !== 'string') {
+      throw new Error('bnlm.buildTagger needs a "defaultTag" describing untagged text.');
+    }
+    if (!domain || typeof domain !== 'string') {
+      throw new Error('bnlm.buildTagger needs a "domain" describing what kind of text to generate.');
+    }
+    const clampedCount = Math.min(Math.max(Math.round(Number(count) || 20), 5), 60);
+    const clampedSteps = Math.min(Math.max(Math.round(Number(steps) || 300), 1), 800);
+    const examples = await generateTaggedExamples(tags.map(String), defaultTag, domain, clampedCount);
+    if (examples.length === 0) {
+      throw new Error('Groq returned no usable tagged examples — try rewording the domain or tags.');
+    }
+    const { init, train } = await localTagger.ensureInitAndTrain(examples, clampedSteps);
+    return { text:
+      `Generated ${examples.length} tagged examples about "${domain}" via Groq, then trained a local tagger ` +
+      `right here in the browser: ${init.paramCount.toLocaleString()} params, vocab ${init.vocabSize}, ` +
+      `tags [${init.tagLabels.join(', ')}], ${train.steps} steps, final loss ${train.finalLoss.toFixed(3)}. ` +
+      `It's ready for bnlm.tag now.`
+    };
+  }
+
+  if (toolCall.tool === 'bnlm.tag') {
+    const { text: input } = toolCall.args || {};
+    if (!input || typeof input !== 'string') throw new Error('bnlm.tag is missing "text" to tag.');
+    if (!localTagger.isReady) {
+      throw new Error('No tagger has been trained yet in this tab — call bnlm.buildTagger first.');
+    }
+    const spans = await localTagger.tag(input);
+    const lines = spans.map(s => `[${s.tag}] "${s.text}"`);
+    return { text: `Tagged spans:\n${lines.join('\n')}` };
   }
 
   throw new Error(`Unknown local model tool: "${toolCall.tool}"`);

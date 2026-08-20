@@ -5,6 +5,7 @@
 //   - prose      → corpus for the generative BNLM (next-token prediction)
 //   - labeled    → {text, label} examples for the classifier
 //   - pairs      → {a, b} paraphrase pairs for the embedder's contrastive loss
+//   - tagged     → {text, tags[]} per-character labels for the tagger
 //
 // WHY THE LABELED PROMPT IS SO INSISTENT ABOUT VARIETY:
 //
@@ -25,8 +26,9 @@
 import { fetchGroqText } from './groqFetch';
 import { LabeledExample } from './localClassifier';
 import { ParaphrasePair } from './localEmbedder';
+import { TaggedExample } from './localTagger';
 
-export type DatasetMode = 'prose' | 'labeled' | 'pairs';
+export type DatasetMode = 'prose' | 'labeled' | 'pairs' | 'tagged';
 
 /** Prose corpus for the generative model — blank-line-separated documents. */
 export async function generateProseCorpus(topic: string, count: number): Promise<string> {
@@ -261,4 +263,77 @@ export function describeDataset(examples: LabeledExample[]): {
   // (localClassifier.explain) surfaced that. Treat a clean report as "no
   // obvious problem", not "the data is good".
   return { total: examples.length, perLabel, distinctOpeners, topOpenerShare, warnings };
+}
+
+/**
+ * Tagged examples for the per-character tagger, generated as prose with
+ * inline markup rather than raw index arrays or parallel tag strings — an
+ * LLM reproduces `[tag]...[/tag]` far more reliably than it keeps a
+ * character-index array in sync with text it's simultaneously writing.
+ * Everything outside a markup span is `defaultTag`; a sentence can contain
+ * zero, one, or several tagged spans, and tags must not nest.
+ */
+export async function generateTaggedExamples(
+  tags: string[],
+  defaultTag: string,
+  domain: string,
+  count = 20
+): Promise<TaggedExample[]> {
+  if (tags.length === 0) {
+    throw new Error('generateTaggedExamples needs at least one tag to mark up.');
+  }
+  const text = await fetchGroqText(
+    'agent-chat',
+    `Generate exactly ${count} short example sentences about: ${domain}.
+
+Wrap any text that should be tagged with one of these tags in markup, like
+[tagname]the relevant words[/tagname]:
+${tags.map(t => `- ${t}`).join('\n')}
+
+Leave everything else unmarked — it is implicitly "${defaultTag}". Not every
+sentence needs a tag; a sentence may contain zero, one, or several tagged
+spans, of different tags. Do NOT nest tags inside each other. Do NOT reuse
+the same sentence structure — vary length, phrasing, and where the tagged
+span falls in the sentence.
+
+Write only the sentences, one per line, with the [tagname]...[/tagname]
+markup inline. No headers, no numbering, no commentary, no markdown.`
+  );
+  return parseTaggedText(text, tags, defaultTag);
+}
+
+/**
+ * Tolerant parser for the inline `[tag]...[/tag]` markup format. A line with
+ * no markup at all is still valid data — every character is defaultTag. A
+ * span naming an unrecognized tag has its markup stripped and its text
+ * folded into defaultTag rather than being dropped: the surrounding
+ * sentence is still real training signal even if one span's tag name came
+ * back malformed.
+ */
+export function parseTaggedText(raw: string, tags: string[], defaultTag: string): TaggedExample[] {
+  const canonical = new Map(tags.map(t => [t.toLowerCase(), t]));
+  const out: TaggedExample[] = [];
+  const spanRe = /\[(\w+)\]([\s\S]*?)\[\/\1\]/g;
+
+  for (const rawLine of raw.split('\n')) {
+    const line = rawLine.trim().replace(/^[\s\-*>\d.)\]]+/, '');
+    if (!line) continue;
+
+    let text = '';
+    const charTags: string[] = [];
+    let lastIndex = 0;
+    spanRe.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = spanRe.exec(line))) {
+      for (const ch of line.slice(lastIndex, match.index)) { text += ch; charTags.push(defaultTag); }
+      const resolved = canonical.get(match[1].toLowerCase()) ?? defaultTag;
+      for (const ch of match[2]) { text += ch; charTags.push(resolved); }
+      lastIndex = spanRe.lastIndex;
+    }
+    for (const ch of line.slice(lastIndex)) { text += ch; charTags.push(defaultTag); }
+
+    if (text.trim()) out.push({ text, tags: charTags });
+  }
+
+  return out;
 }
