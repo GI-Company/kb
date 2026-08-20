@@ -120,6 +120,32 @@ classifier then runs with no further model calls:
 
 \`\`\`tool
 {"tool":"bnlm.buildClassifier","args":{"labels":["files","network","model"],"domain":"short commands a user types into a desktop OS","perLabel":60}}
+\`\`\`
+
+There is also an EMBEDDER, which answers a third kind of question neither of
+the above can: "how similar is this to that?" Use it for semantic search or
+for comparing two pieces of text by meaning rather than exact wording — it
+runs entirely locally at query time, no cloud call.
+
+If you don't already have a trained embedder, generate paraphrase pairs and
+train in one step — same shape as bnlm.buildGenerative/bnlm.buildClassifier,
+Groq is used once and the embedder then runs with no further model calls:
+
+\`\`\`tool
+{"tool":"bnlm.buildEmbeddingIndex","args":{"topic":"notes about a software project","count":30,"steps":300}}
+\`\`\`
+
+Once trained, compare two strings directly:
+
+\`\`\`tool
+{"tool":"bnlm.similarity","args":{"textA":"the deploy failed again","textB":"another failed deployment"}}
+\`\`\`
+
+or search the signed-in user's own files by meaning, not just filename —
+this is the one bnlm.* tool that reads the VFS:
+
+\`\`\`tool
+{"tool":"bnlm.semanticSearch","args":{"query":"notes about the login bug","path":"/","topK":5}}
 \`\`\``;
 
 // Appended alongside BNLM_TOOL_CONTRACT — a general escape hatch for

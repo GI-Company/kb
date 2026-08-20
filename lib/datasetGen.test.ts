@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseLabeledExamples, describeDataset } from './datasetGen';
+import { parseLabeledExamples, describeDataset, parseParaphrasePairs } from './datasetGen';
 
 const LABELS = ['files', 'network'];
 
@@ -59,6 +59,49 @@ describe('parseLabeledExamples', () => {
 
   it('returns nothing when no line has a separator', () => {
     expect(parseLabeledExamples('files: open it\nnetwork: ping it', LABELS)).toEqual([]);
+  });
+});
+
+describe('parseParaphrasePairs', () => {
+  it('parses the clean format', () => {
+    const out = parseParaphrasePairs('the cat sat on the mat | a cat was sitting on a mat\nshe ran fast | she moved quickly');
+    expect(out).toEqual([
+      { a: 'the cat sat on the mat', b: 'a cat was sitting on a mat' },
+      { a: 'she ran fast', b: 'she moved quickly' },
+    ]);
+  });
+
+  it('survives the mess models actually emit', () => {
+    const messy = [
+      'Here are your pairs:',
+      '',
+      '1. the dog barked | the dog made noise',
+      '- **it rained hard** | there was heavy rain',
+      '   he left early   |   he departed sooner   ',
+      '',
+      'Hope this helps!',
+    ].join('\n');
+    const out = parseParaphrasePairs(messy);
+    expect(out).toEqual([
+      { a: 'the dog barked', b: 'the dog made noise' },
+      { a: 'it rained hard', b: 'there was heavy rain' },
+      { a: 'he left early', b: 'he departed sooner' },
+    ]);
+  });
+
+  it('drops lines with no separator or an empty side', () => {
+    const out = parseParaphrasePairs('no separator here\n| missing a side\nmissing b side |');
+    expect(out).toEqual([]);
+  });
+
+  it('keeps pipes that appear inside the text', () => {
+    const out = parseParaphrasePairs('run a | grep b | cmd | run "a" then "grep b"');
+    expect(out).toEqual([{ a: 'run a', b: 'grep b | cmd | run "a" then "grep b"' }]);
+  });
+
+  it('drops duplicate pairs, case-insensitively', () => {
+    const out = parseParaphrasePairs('a | b\nA | B\na | b');
+    expect(out).toHaveLength(1);
   });
 });
 

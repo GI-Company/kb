@@ -151,4 +151,11 @@ export const AGENT_TOOL_CAPABILITIES: Record<string, Capability[]> = {
   // Same shape as bnlm.buildClassifier: generateProseCorpus spends Groq
   // once to write the training stories, then training itself is local.
   'bnlm.buildGenerative': ['model:cloud', 'model:local'],
+  // Same shape again: generateParaphrasePairs spends Groq once, then the
+  // embedder trains and runs entirely locally.
+  'bnlm.buildEmbeddingIndex': ['model:cloud', 'model:local'],
+  'bnlm.similarity': ['model:local'],
+  // Reads the signed-in user's VFS to rank files against the query — the
+  // only bnlm.* tool that touches vfs at all.
+  'bnlm.semanticSearch': ['model:local', 'vfs'],
 };

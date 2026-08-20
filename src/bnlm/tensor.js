@@ -399,6 +399,48 @@ export function rowNormalize(x, eps = 1e-6) {
   return out;
 }
 
+/**
+ * Row-wise L2 normalization: y_i = x_i / sqrt(sum_j x_j^2 + eps). Unlike
+ * rowNormalize (L1, for the linear-attention mixer's non-negative scores),
+ * this is the one that makes a vector's self dot-product equal 1 -- i.e. it
+ * turns matmul(y, y, false, true) into a cosine-similarity matrix. That's
+ * what the embedding model's contrastive loss needs; nothing else in this
+ * engine currently uses it.
+ * Backward: dx_k = (g_k - y_k*dot(g,y)) / norm, where norm = sqrt(sumSq+eps)
+ * -- same derivation shape as softmaxRows below (dot of grad against the
+ * OUTPUT, not the input), since both are "normalize, then the Jacobian only
+ * depends on the normalized result."
+ */
+export function l2Normalize(x, eps = 1e-8) {
+  const [rows, cols] = x.shape;
+  const out = new Tensor(new Float32Array(x.data.length), x.shape, x.requiresGrad);
+  const norm = new Float32Array(rows);
+  for (let r = 0; r < rows; r++) {
+    let sumSq = 0;
+    for (let c = 0; c < cols; c++) {
+      const v = x.data[r * cols + c];
+      sumSq += v * v;
+    }
+    const n = Math.sqrt(sumSq + eps);
+    norm[r] = n;
+    for (let c = 0; c < cols; c++) out.data[r * cols + c] = x.data[r * cols + c] / n;
+  }
+  out._parents = [x];
+  out._backward = async () => {
+    if (!x.requiresGrad) return;
+    for (let r = 0; r < rows; r++) {
+      let dot = 0;
+      for (let c = 0; c < cols; c++) dot += out.grad[r * cols + c] * out.data[r * cols + c];
+      const n = norm[r];
+      for (let c = 0; c < cols; c++) {
+        const y = out.data[r * cols + c];
+        x.grad[r * cols + c] += (out.grad[r * cols + c] - y * dot) / n;
+      }
+    }
+  };
+  return out;
+}
+
 /** Row-wise numerically-stable softmax. x: (rows, cols) */
 export function softmaxRows(x) {
   const [rows, cols] = x.shape;

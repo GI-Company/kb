@@ -6,7 +6,11 @@
 
 import { localModel } from './localModel';
 import { localClassifier, LabeledExample } from './localClassifier';
-import { generateLabeledExamples, describeDataset, generateProseCorpus } from './datasetGen';
+import { localEmbedder } from './localEmbedder';
+import { generateLabeledExamples, describeDataset, generateProseCorpus, generateParaphrasePairs } from './datasetGen';
+import { cosineSimilarity } from '../src/bnlm/embed.js';
+import { vfs } from './vfs';
+import { resolveDir, ROOT_CWD } from './terminalFs';
 
 export interface ToolCall {
   tool: string;
@@ -51,6 +55,9 @@ export const LOCAL_MODEL_TOOL_NAMES = [
   'bnlm.buildClassifier',
   'bnlm.trainClassifier',
   'bnlm.classify',
+  'bnlm.buildEmbeddingIndex',
+  'bnlm.similarity',
+  'bnlm.semanticSearch',
 ] as const;
 
 export function extractToolCall(text: string): ToolCall | null {
@@ -68,8 +75,33 @@ export function stripToolBlock(text: string): string {
   return text.replace(/```tool\s*[\s\S]*?```/, '').trim();
 }
 
-/** Executes a bnlm.* tool call against the in-browser models. Throws on failure — callers decide how to surface that. */
-export async function runLocalModelTool(toolCall: ToolCall): Promise<ToolRunResult> {
+/** Recursive walk cap for bnlm.semanticSearch — an agent tool call is a bad place to accidentally read someone's entire filesystem. */
+const MAX_SEARCH_FILES = 200;
+
+/**
+ * Recursively collects every readable text file under a VFS directory, for
+ * bnlm.semanticSearch. Base64-encoded (binary) files are skipped — embedding
+ * raw base64 text would be meaningless. Stops early past MAX_SEARCH_FILES
+ * rather than walking an entire large tree just to discard most of it.
+ */
+async function collectVfsFiles(dirId: string, userId: string, dirPath: string): Promise<{ path: string; content: string }[]> {
+  const out: { path: string; content: string }[] = [];
+  const children = await vfs.list(dirId, userId);
+  for (const child of children) {
+    if (out.length >= MAX_SEARCH_FILES) break;
+    const childPath = `${dirPath}/${child.name}`;
+    if (child.type === 'directory') {
+      out.push(...await collectVfsFiles(child.id, userId, childPath));
+    } else if (!child.encoding) {
+      const content = await vfs.read(child.id, userId);
+      if (content.trim()) out.push({ path: childPath, content });
+    }
+  }
+  return out.slice(0, MAX_SEARCH_FILES);
+}
+
+/** Executes a bnlm.* tool call against the in-browser models. Throws on failure — callers decide how to surface that. `userId` is only needed by tools that touch the VFS (bnlm.semanticSearch) — see lib/kernosTools.ts's runTool, the sole caller, which resolves it once via getCurrentUserId(). */
+export async function runLocalModelTool(toolCall: ToolCall, userId?: string): Promise<ToolRunResult> {
   if (toolCall.tool === 'bnlm.train') {
     const { corpus, steps = 200 } = toolCall.args || {};
     if (!corpus || typeof corpus !== 'string') throw new Error('Tool call is missing "corpus" text to train on.');
@@ -128,6 +160,86 @@ export async function runLocalModelTool(toolCall: ToolCall): Promise<ToolRunResu
       `right here in the browser: ${init.paramCount.toLocaleString()} params, vocab ${init.vocabSize}, ` +
       `${train.steps} steps, final loss ${train.finalLoss.toFixed(3)}.`
     };
+  }
+
+  // ── Embedder tools ──────────────────────────────────────────────────
+  // Answers "how similar is this to that?" — the primitive underneath
+  // semantic search. Same spend-Groq-once-then-run-local shape as
+  // bnlm.buildGenerative/bnlm.buildClassifier above.
+
+  if (toolCall.tool === 'bnlm.buildEmbeddingIndex') {
+    const { topic, count = 30, steps = 300 } = toolCall.args || {};
+    if (!topic || typeof topic !== 'string') {
+      throw new Error('bnlm.buildEmbeddingIndex needs a "topic" describing what kind of text to build the embedding space around.');
+    }
+    const clampedCount = Math.min(Math.max(Math.round(Number(count) || 30), 5), 100);
+    const clampedSteps = Math.min(Math.max(Math.round(Number(steps) || 300), 1), 800);
+    const pairs = await generateParaphrasePairs(topic, clampedCount);
+    if (pairs.length < 2) {
+      throw new Error('Groq returned too few usable paraphrase pairs to train an embedder on — try a broader topic.');
+    }
+    const { init, train } = await localEmbedder.ensureInitAndTrain(pairs, clampedSteps);
+    return { text:
+      `Generated ${pairs.length} paraphrase pairs about "${topic}" via Groq, then trained a local embedder ` +
+      `right here in the browser: ${init.paramCount.toLocaleString()} params, vocab ${init.vocabSize}, ` +
+      `${train.steps} steps, final loss ${train.finalLoss.toFixed(3)}. It's ready for bnlm.similarity or ` +
+      `bnlm.semanticSearch now.`
+    };
+  }
+
+  if (toolCall.tool === 'bnlm.similarity') {
+    const { textA, textB } = toolCall.args || {};
+    if (!textA || typeof textA !== 'string' || !textB || typeof textB !== 'string') {
+      throw new Error('bnlm.similarity needs both "textA" and "textB" strings to compare.');
+    }
+    if (!localEmbedder.isReady) {
+      throw new Error('No embedder has been trained yet in this tab — call bnlm.buildEmbeddingIndex first.');
+    }
+    const score = await localEmbedder.similarity(textA, textB);
+    return { text: `Cosine similarity: ${score.toFixed(3)} (1.0 = identical meaning, 0 = unrelated, -1.0 = opposite).` };
+  }
+
+  if (toolCall.tool === 'bnlm.semanticSearch') {
+    const { query, path = '/', topK = 5 } = toolCall.args || {};
+    if (!query || typeof query !== 'string') {
+      throw new Error('bnlm.semanticSearch needs a "query" string to search for.');
+    }
+    if (!localEmbedder.isReady) {
+      throw new Error('No embedder has been trained yet in this tab — call bnlm.buildEmbeddingIndex first.');
+    }
+    if (!userId) {
+      throw new Error('bnlm.semanticSearch needs a signed-in user to know whose files to search.');
+    }
+    const resolved = await resolveDir(ROOT_CWD, path, userId);
+    if (typeof resolved === 'string') {
+      throw new Error(`bnlm.semanticSearch: ${resolved}`);
+    }
+    const startId = resolved.length ? resolved[resolved.length - 1].id : 'home';
+    const files = await collectVfsFiles(startId, userId, path === '/' ? '' : path.replace(/\/+$/, ''));
+    if (files.length === 0) {
+      return { text: `No readable text files found under "${path}".` };
+    }
+    const clampedTopK = Math.min(Math.max(Math.round(Number(topK) || 5), 1), 20);
+    const queryVec = await localEmbedder.embed(query);
+    const scored = await Promise.all(files.map(async f => {
+      // Embed only the opening of the file, not the whole thing: the
+      // embedder pools its LAST token (see src/bnlm/embed.js's doc comment
+      // on why — every mixer here is causal), and padBatch keeps a
+      // sequence's tail when it's longer than contextLen. Feeding the full
+      // file would end up representing wherever it happens to end, not
+      // what it's about — truncating to a head slice keeps the embedded
+      // region anchored to the file's opening/topic instead.
+      const head = f.content.slice(0, 300);
+      return {
+        path: f.path,
+        snippet: f.content.slice(0, 160).replace(/\s+/g, ' ').trim(),
+        score: cosineSimilarity(queryVec, await localEmbedder.embed(head)),
+      };
+    }));
+    scored.sort((a, b) => b.score - a.score);
+    const top = scored.slice(0, clampedTopK);
+    const lines = top.map(r => `${r.score.toFixed(3)}  ${r.path}\n    ${r.snippet}${r.snippet.length >= 160 ? '…' : ''}`);
+    return { text: `Top ${top.length} match${top.length === 1 ? '' : 'es'} for "${query}" under "${path}" (${files.length} file${files.length === 1 ? '' : 's'} searched):\n\n${lines.join('\n\n')}` };
   }
 
   // ── Classifier tools ────────────────────────────────────────────────

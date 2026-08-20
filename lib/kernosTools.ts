@@ -14,7 +14,10 @@ import { getCurrentUserId } from './auth';
 
 export async function runTool(toolCall: ToolCall): Promise<ToolRunResult> {
   if (toolCall.tool.startsWith('bnlm.')) {
-    return runLocalModelTool(toolCall);
+    // Only bnlm.semanticSearch actually needs this (to scope which user's
+    // VFS it searches) — every other bnlm.* tool ignores the extra arg.
+    const userId = await getCurrentUserId();
+    return runLocalModelTool(toolCall, userId);
   }
 
   if (toolCall.tool === 'kernos.exec') {
