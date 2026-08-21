@@ -87,6 +87,20 @@ export interface ScoreResult {
   tokensScored: number;
 }
 
+export interface ScoreExplanation {
+  overall: ScoreResult;
+  perCharacter: {
+    char: string;
+    index: number;
+    /** Probability the model actually assigned to this character, given everything before it. */
+    actualProb: number;
+    /** -log(actualProb) — the per-token contribution to perplexity. High = the model didn't see this coming. */
+    surprise: number;
+    /** What the model would have guessed instead, most likely first. */
+    topAlternatives: { char: string; prob: number }[];
+  }[];
+}
+
 class LocalModelService {
   private tokenizer: any = null;
   private model: any = null;
@@ -292,6 +306,78 @@ class LocalModelService {
     const logits = await this.model.forward(input, 1, T);
     const { value } = crossEntropyLoss(logits, target);
     return { loss: value, perplexity: Math.exp(value), tokensScored: T };
+  }
+
+  /**
+   * Same forward pass as score(), but keeps the full per-position softmax
+   * instead of reducing straight to a loss number — "how surprised was the
+   * model by EACH character, and what did it expect instead?" Deliberately
+   * NOT occlusion-based (unlike the classifier/embedder): occluding a
+   * character from a next-token-prediction sequence would shift every
+   * downstream prediction's context, conflating a whole chain of
+   * autoregressive choices into one number. One forward pass over the fixed
+   * text answers a cleaner, more honest question for this model shape.
+   *
+   * Deliberately scoped to bnlm.score, not bnlm.generate — bnlm.generate
+   * dispatches to one of three separate autoregressive code paths
+   * (generateWithCache/generateRecurrent/generateRecurrentRWKV in
+   * model.js), and threading this capture through all three is real,
+   * separate, higher-risk work, not done here.
+   */
+  async explainScore(text: string, topK = 3): Promise<ScoreExplanation> {
+    if (!this.model || !this.tokenizer) {
+      throw new Error('Local model not initialized — train one first.');
+    }
+    const safeText = this.filterToVocab(text);
+    if (safeText.length < 2) {
+      throw new Error('Not enough recognizable text to score (needs at least 2 characters from the trained vocabulary).');
+    }
+    const ids: Int32Array = this.tokenizer.encode(safeText);
+    const T = Math.min(ids.length - 1, this.config.contextLen);
+    if (T < 1) {
+      throw new Error('Text too short to score.');
+    }
+    const input = Int32Array.from(ids.slice(0, T));
+    const target = Int32Array.from(ids.slice(1, T + 1));
+    const logits = await this.model.forward(input, 1, T);
+    const { value } = crossEntropyLoss(logits, target);
+
+    const vocabSize: number = this.tokenizer.vocabSize;
+    const itos: string[] = this.tokenizer.itos;
+    const perCharacter: ScoreExplanation['perCharacter'] = [];
+    for (let t = 0; t < T; t++) {
+      const rowStart = t * vocabSize;
+      let max = -Infinity;
+      for (let v = 0; v < vocabSize; v++) max = Math.max(max, logits.data[rowStart + v]);
+      let sumExp = 0;
+      const probs = new Float32Array(vocabSize);
+      for (let v = 0; v < vocabSize; v++) {
+        const e = Math.exp(logits.data[rowStart + v] - max);
+        probs[v] = e;
+        sumExp += e;
+      }
+      for (let v = 0; v < vocabSize; v++) probs[v] /= sumExp;
+
+      const actualId = target[t];
+      const actualProb = probs[actualId];
+      const ranked = Array.from(probs)
+        .map((p, id) => ({ id, p }))
+        .sort((a, b) => b.p - a.p)
+        .slice(0, topK);
+
+      perCharacter.push({
+        char: itos[actualId],
+        index: t,
+        actualProb,
+        surprise: -Math.log(Math.max(actualProb, 1e-9)),
+        topAlternatives: ranked.map(r => ({ char: itos[r.id], prob: r.p })),
+      });
+    }
+
+    return {
+      overall: { loss: value, perplexity: Math.exp(value), tokensScored: T },
+      perCharacter,
+    };
   }
 
   exportInt8(): { blob: Blob; filename: string } {

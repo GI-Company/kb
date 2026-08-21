@@ -4,11 +4,14 @@
 // in one unrelated change, and grew alongside it.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+let localModelReady = false;
 const ensureInitAndTrain = vi.fn();
+const explainScore = vi.fn();
 vi.mock('./localModel', () => ({
   localModel: {
-    get isReady() { return false; },
+    get isReady() { return localModelReady; },
     ensureInitAndTrain: (...a: any[]) => ensureInitAndTrain(...a),
+    explainScore: (...a: any[]) => explainScore(...a),
   },
 }));
 
@@ -80,6 +83,42 @@ vi.mock('./localSeq2Seq', () => ({
 }));
 
 import { runLocalModelTool } from './localModelTools';
+
+describe('bnlm.score', () => {
+  beforeEach(() => {
+    localModelReady = true;
+    explainScore.mockReset();
+  });
+
+  it('rejects a call with no text', async () => {
+    await expect(runLocalModelTool({ tool: 'bnlm.score', args: {} }))
+      .rejects.toThrow(/text/i);
+  });
+
+  it('requires a trained model', async () => {
+    localModelReady = false;
+    await expect(runLocalModelTool({ tool: 'bnlm.score', args: { text: 'hi' } }))
+      .rejects.toThrow(/train/i);
+  });
+
+  it('reports the score and a score glassBox from the trained model', async () => {
+    const perCharacter = [
+      { char: 'b', index: 0, actualProb: 0.97, surprise: 0.03, topAlternatives: [{ char: 'b', prob: 0.97 }] },
+      { char: 'a', index: 1, actualProb: 0.03, surprise: 3.4, topAlternatives: [{ char: 'b', prob: 0.9 }, { char: 'a', prob: 0.03 }] },
+    ];
+    explainScore.mockResolvedValue({
+      overall: { loss: 1.234, perplexity: 3.434, tokensScored: 2 },
+      perCharacter,
+    });
+
+    const result = await runLocalModelTool({ tool: 'bnlm.score', args: { text: 'ab' } });
+
+    expect(explainScore).toHaveBeenCalledWith('ab');
+    expect(result.text).toContain('1.234');
+    expect(result.text).toContain('3.43');
+    expect(result.glassBox).toEqual({ kind: 'score', perplexity: 3.434, perCharacter });
+  });
+});
 
 describe('bnlm.buildGenerative', () => {
   beforeEach(() => {

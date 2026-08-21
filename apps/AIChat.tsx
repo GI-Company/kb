@@ -67,7 +67,7 @@ const ThinkingBlock: React.FC<{ content: string; isStreaming?: boolean }> = ({ c
 const ContributionChips: React.FC<{
     label: string;
     contributions: { token: string; score: number }[];
-    tooltip: (c: { token: string; score: number }) => string;
+    tooltip: (c: { token: string; score: number }, index: number) => string;
     emptyNote?: string;
 }> = ({ label, contributions, tooltip, emptyNote }) => {
     if (contributions.length === 0) return null;
@@ -79,7 +79,7 @@ const ContributionChips: React.FC<{
                 {contributions.map((c, i) => (
                     <span
                         key={i}
-                        title={tooltip(c)}
+                        title={tooltip(c, i)}
                         className="px-1.5 py-0.5 rounded text-[10px] font-mono border"
                         style={{
                             backgroundColor: `rgba(34, 211, 238, ${Math.max(0, c.score / maxScore) * 0.35})`,
@@ -170,6 +170,25 @@ const TaggingBody: React.FC<{ detail: Extract<GlassBoxDetail, { kind: 'tagging' 
     </div>
 );
 
+const ScoreBody: React.FC<{ detail: Extract<GlassBoxDetail, { kind: 'score' }> }> = ({ detail }) => (
+    <>
+        <div className="text-[10px] font-mono text-gray-500">
+            Perplexity: <span className="text-cyan-300">{detail.perplexity.toFixed(2)}</span> (lower = closer to what it learned)
+        </div>
+        <ContributionChips
+            label="Per-character surprise (how unexpected each character was)"
+            contributions={detail.perCharacter.map(p => ({ token: p.char, score: p.surprise }))}
+            tooltip={(_, i) => {
+                const p = detail.perCharacter[i];
+                const alt = p.topAlternatives[0];
+                return alt && alt.char !== p.char
+                    ? `Expected "${alt.char}" (${(alt.prob * 100).toFixed(0)}%) — got "${p.char}" (${(p.actualProb * 100).toFixed(0)}%)`
+                    : `"${p.char}" — ${(p.actualProb * 100).toFixed(0)}% expected`;
+            }}
+        />
+    </>
+);
+
 // "Why this decision?" — the inspectable half of a bnlm.* result that has
 // attribution machinery. A label/score alone can't be checked; the full
 // distribution (or occlusion contributions) shows the evidence a person
@@ -194,6 +213,7 @@ const GlassBoxPanel: React.FC<{ detail: GlassBoxDetail }> = ({ detail }) => {
                     {detail.kind === 'classification' && <ClassificationBody detail={detail} />}
                     {detail.kind === 'similarity' && <SimilarityBody detail={detail} />}
                     {detail.kind === 'tagging' && <TaggingBody detail={detail} />}
+                    {detail.kind === 'score' && <ScoreBody detail={detail} />}
                 </div>
             )}
         </div>

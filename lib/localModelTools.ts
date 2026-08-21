@@ -49,6 +49,12 @@ export type GlassBoxDetail =
       kind: 'tagging';
       /** Confidence per span is genuinely free — the softmax was already computed to pick the tag, see src/bnlm/tagger.js's predict(). */
       spans: { tag: string; start: number; end: number; text: string; confidence: number }[];
+    }
+  | {
+      kind: 'score';
+      perplexity: number;
+      /** Per-character surprise — see lib/localModel.ts's explainScore. */
+      perCharacter: { char: string; index: number; actualProb: number; surprise: number; topAlternatives: { char: string; prob: number }[] }[];
     };
 
 export interface ToolRunResult {
@@ -156,11 +162,13 @@ export async function runLocalModelTool(toolCall: ToolCall, userId?: string): Pr
     const { text = '' } = toolCall.args || {};
     if (!localModel.isReady) throw new Error('No local model has been trained yet in this tab — train one first.');
     if (!text || typeof text !== 'string') throw new Error('Tool call is missing "text" to score.');
-    const result = await localModel.score(text);
-    return { text:
-      `Score for that text against the trained model: loss ${result.loss.toFixed(3)}, ` +
-      `perplexity ${result.perplexity.toFixed(2)} (lower = closer to what it learned), ` +
-      `over ${result.tokensScored} tokens.`
+    const { overall, perCharacter } = await localModel.explainScore(text);
+    return {
+      text:
+        `Score for that text against the trained model: loss ${overall.loss.toFixed(3)}, ` +
+        `perplexity ${overall.perplexity.toFixed(2)} (lower = closer to what it learned), ` +
+        `over ${overall.tokensScored} tokens.`,
+      glassBox: { kind: 'score', perplexity: overall.perplexity, perCharacter },
     };
   }
 
