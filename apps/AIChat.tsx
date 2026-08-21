@@ -147,6 +147,29 @@ const SimilarityBody: React.FC<{ detail: Extract<GlassBoxDetail, { kind: 'simila
     </>
 );
 
+const TaggingBody: React.FC<{ detail: Extract<GlassBoxDetail, { kind: 'tagging' }> }> = ({ detail }) => (
+    <div>
+        <div className="text-[9px] text-gray-600 uppercase tracking-wider mb-1">
+            Tagged spans (confidence = weakest character in the span)
+        </div>
+        <div className="space-y-1">
+            {detail.spans.map((s, i) => (
+                <div key={i} className="flex items-center gap-2">
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-mono border border-cyan-500/40 text-cyan-300 shrink-0">
+                        {s.tag}
+                    </span>
+                    <span className="text-[10px] font-mono text-gray-400 truncate flex-1" title={s.text}>
+                        {s.text || '(empty)'}
+                    </span>
+                    <span className="text-[10px] font-mono text-gray-500 w-10 text-right shrink-0">
+                        {(s.confidence * 100).toFixed(0)}%
+                    </span>
+                </div>
+            ))}
+        </div>
+    </div>
+);
+
 // "Why this decision?" — the inspectable half of a bnlm.* result that has
 // attribution machinery. A label/score alone can't be checked; the full
 // distribution (or occlusion contributions) shows the evidence a person
@@ -170,6 +193,7 @@ const GlassBoxPanel: React.FC<{ detail: GlassBoxDetail }> = ({ detail }) => {
                 <div className="mt-1.5 ml-4 pl-2 border-l border-cyan-500/20 space-y-2">
                     {detail.kind === 'classification' && <ClassificationBody detail={detail} />}
                     {detail.kind === 'similarity' && <SimilarityBody detail={detail} />}
+                    {detail.kind === 'tagging' && <TaggingBody detail={detail} />}
                 </div>
             )}
         </div>

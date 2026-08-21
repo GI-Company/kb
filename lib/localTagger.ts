@@ -65,6 +65,8 @@ export interface TagSpan {
   start: number;
   end: number;
   text: string;
+  /** The MINIMUM per-character confidence across the span, not the average — a span shouldn't look confident because most of it was easy; report its weakest link. */
+  confidence: number;
 }
 
 function shuffled<T>(arr: T[], rand: () => number): T[] {
@@ -220,17 +222,20 @@ class LocalTaggerService {
     // returned span's own `text` field rather than left implicit.
     const knownText = known.join('');
     const ids = this.tokenizer.encode(knownText);
-    const tagIds = await this.model.predict(ids);
+    const predictions = await this.model.predict(ids);
 
     const spans: TagSpan[] = [];
     let start = 0;
     for (let i = 1; i <= known.length; i++) {
-      if (i === known.length || tagIds[i] !== tagIds[start]) {
+      if (i === known.length || predictions[i].tag !== predictions[start].tag) {
+        let confidence = predictions[start].confidence;
+        for (let j = start + 1; j < i; j++) confidence = Math.min(confidence, predictions[j].confidence);
         spans.push({
-          tag: this.tagLabels[tagIds[start]],
+          tag: this.tagLabels[predictions[start].tag],
           start,
           end: i,
           text: known.slice(start, i).join(''),
+          confidence,
         });
         start = i;
       }

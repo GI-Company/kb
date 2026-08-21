@@ -51,12 +51,16 @@ describe('BNLMTagger', () => {
     expect(logits.shape).toEqual([B * T, 2]);
   });
 
-  it('predict returns exactly one tag per input character', async () => {
+  it('predict returns exactly one {tag, confidence} per input character', async () => {
     const tokenizer = new CharTokenizer('abcdef');
     const tagger = tinyTagger(tokenizer.vocabSize);
-    const tags = await tagger.predict(tokenizer.encode('abcde'));
-    expect(tags).toHaveLength(5);
-    for (const t of tags) expect([0, 1]).toContain(t);
+    const predictions = await tagger.predict(tokenizer.encode('abcde'));
+    expect(predictions).toHaveLength(5);
+    for (const p of predictions) {
+      expect([0, 1]).toContain(p.tag);
+      expect(p.confidence).toBeGreaterThan(0);
+      expect(p.confidence).toBeLessThanOrEqual(1);
+    }
   });
 
   // The real test: does gradient flow correctly through the compacted-
@@ -100,8 +104,48 @@ describe('BNLMTagger', () => {
     // reflected in predict(), not only in the reported loss number.
     const predicted = await tagger.predict(tokenizer.encode('run job 100'));
     const expected = Array.from('run job 100').map(tagOf);
-    const correct = predicted.filter((p, i) => p === expected[i]).length;
+    const correct = predicted.filter((p, i) => p.tag === expected[i]).length;
     expect(correct / predicted.length).toBeGreaterThan(0.7);
+  });
+
+  // Confidence needs to be a real signal, not a decorative number sitting
+  // next to the tag. The digit/letter rule here is purely local (no
+  // context needed), so an in-pattern vs. boundary-position comparison
+  // shows almost no gap once trained — every position converges to near-1.0
+  // confidence regardless of where it sits. The reliable, meaningful
+  // comparison is across TRAINING PROGRESS on the same probe: an untrained
+  // 2-tag model should sit near chance (0.5), and confidence should climb
+  // toward certainty as the loss genuinely comes down — confirmed
+  // empirically before writing this assertion, not guessed.
+  it('confidence starts near chance and rises toward certainty as training progresses', async () => {
+    const examples = ['rm 42 now', 'delete file 7', 'run job 100', 'open port 8080', 'set id 5'];
+    const tagOf = (ch) => (/[0-9]/.test(ch) ? 1 : 0);
+    const tokenizer = new CharTokenizer(examples.join('\n'));
+    const tagger = tinyTagger(tokenizer.vocabSize, 2, 42);
+    const optimizer = new Adam(tagger.parameters(), { lr: 1e-2 });
+
+    const idsList = examples.map(s => tokenizer.encode(s));
+    const tagsList = examples.map(s => Int32Array.from(Array.from(s).map(tagOf)));
+    const { idsFlat, tagsFlat, B, T, lengths } = padTaggedBatch(idsList, tagsList, 32);
+
+    const probeIds = tokenizer.encode('run100set'); // letters, then digits, then letters — all in-vocab
+    const minConfidence = async () => {
+      const predictions = await tagger.predict(probeIds);
+      return predictions.reduce((min, p) => Math.min(min, p.confidence), 1);
+    };
+
+    const untrainedConfidence = await minConfidence();
+    for (let i = 0; i < 40; i++) {
+      optimizer.zeroGrad();
+      const { loss } = await tagger.loss(idsFlat, B, T, lengths, tagsFlat);
+      await loss.backward();
+      optimizer.step();
+    }
+    const trainedConfidence = await minConfidence();
+
+    expect(untrainedConfidence).toBeLessThan(0.7); // near chance for 2 tags (0.5)
+    expect(trainedConfidence).toBeGreaterThan(0.9);
+    expect(trainedConfidence).toBeGreaterThan(untrainedConfidence);
   });
 
   it('excludes padding from the loss rather than training on it', async () => {

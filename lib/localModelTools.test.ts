@@ -373,17 +373,19 @@ describe('bnlm.tag', () => {
       .rejects.toThrow(/buildTagger/);
   });
 
-  it('reports every tagged span from the trained tagger', async () => {
-    taggerTag.mockResolvedValue([
-      { tag: 'risky', start: 0, end: 8, text: 'rm -rf /' },
-      { tag: 'safe', start: 8, end: 24, text: ' deletes everything' },
-    ]);
+  it('reports every tagged span, with confidence, and a tagging glassBox', async () => {
+    const spans = [
+      { tag: 'risky', start: 0, end: 8, text: 'rm -rf /', confidence: 0.97 },
+      { tag: 'safe', start: 8, end: 24, text: ' deletes everything', confidence: 0.85 },
+    ];
+    taggerTag.mockResolvedValue(spans);
 
     const result = await runLocalModelTool({ tool: 'bnlm.tag', args: { text: 'rm -rf / deletes everything' } });
 
     expect(taggerTag).toHaveBeenCalledWith('rm -rf / deletes everything');
-    expect(result.text).toContain('[risky] "rm -rf /"');
-    expect(result.text).toContain('[safe] " deletes everything"');
+    expect(result.text).toContain('[risky] "rm -rf /" (97%)');
+    expect(result.text).toContain('[safe] " deletes everything" (85%)');
+    expect(result.glassBox).toEqual({ kind: 'tagging', spans });
   });
 });
 

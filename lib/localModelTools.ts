@@ -44,6 +44,11 @@ export type GlassBoxDetail =
       /** Per-character occlusion contribution on each side — see lib/localEmbedder.ts's explainSimilarity. */
       contributionsA: { token: string; index: number; score: number }[];
       contributionsB: { token: string; index: number; score: number }[];
+    }
+  | {
+      kind: 'tagging';
+      /** Confidence per span is genuinely free — the softmax was already computed to pick the tag, see src/bnlm/tagger.js's predict(). */
+      spans: { tag: string; start: number; end: number; text: string; confidence: number }[];
     };
 
 export interface ToolRunResult {
@@ -389,8 +394,11 @@ export async function runLocalModelTool(toolCall: ToolCall, userId?: string): Pr
       throw new Error('No tagger has been trained yet in this tab — call bnlm.buildTagger first.');
     }
     const spans = await localTagger.tag(input);
-    const lines = spans.map(s => `[${s.tag}] "${s.text}"`);
-    return { text: `Tagged spans:\n${lines.join('\n')}` };
+    const lines = spans.map(s => `[${s.tag}] "${s.text}" (${(s.confidence * 100).toFixed(0)}%)`);
+    return {
+      text: `Tagged spans:\n${lines.join('\n')}`,
+      glassBox: { kind: 'tagging', spans },
+    };
   }
 
   // ── Seq2seq tools ───────────────────────────────────────────────────

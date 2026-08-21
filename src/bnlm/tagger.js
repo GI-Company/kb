@@ -113,9 +113,12 @@ export class BNLMTagger {
   }
 
   /**
-   * Inference for a single sequence — one tag id per input character.
+   * Inference for a single sequence — one tag id AND its confidence per
+   * input character. The softmax distribution is already computed here to
+   * find the argmax; confidence is genuinely free (the tag() call site used
+   * to discard it) rather than a second pass.
    * @param {Int32Array|number[]} ids
-   * @returns {Promise<number[]>} length ids.length, one tag index per character
+   * @returns {Promise<{tag: number, confidence: number}[]>} length ids.length
    */
   async predict(ids) {
     const truncated = ids.length > this.contextLen ? ids.slice(-this.contextLen) : ids;
@@ -124,7 +127,7 @@ export class BNLMTagger {
     idsFlat.set(truncated.length ? truncated : [0]);
 
     const logits = await this.forwardLogits(idsFlat, 1, T);
-    const tags = [];
+    const results = [];
     for (let t = 0; t < truncated.length; t++) {
       let best = 0;
       let bestVal = logits.data[t * this.numTags];
@@ -132,9 +135,14 @@ export class BNLMTagger {
         const v = logits.data[t * this.numTags + c];
         if (v > bestVal) { bestVal = v; best = c; }
       }
-      tags.push(best);
+      // Numerically stable softmax, reusing bestVal as the max to subtract.
+      let sumExp = 0;
+      for (let c = 0; c < this.numTags; c++) {
+        sumExp += Math.exp(logits.data[t * this.numTags + c] - bestVal);
+      }
+      results.push({ tag: best, confidence: 1 / sumExp });
     }
-    return tags;
+    return results;
   }
 }
 
