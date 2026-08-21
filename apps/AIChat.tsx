@@ -189,6 +189,41 @@ const ScoreBody: React.FC<{ detail: Extract<GlassBoxDetail, { kind: 'score' }> }
     </>
 );
 
+// Worth being honest in the UI too, not just the code comments: this shows
+// a real, training-sensitive signal (see lib/localSeq2Seq.ts's
+// transformWithAttention), not a clean "this source character caused this
+// output character" story at this model's scale — hence "most-attended",
+// not "caused by".
+const TransformBody: React.FC<{ detail: Extract<GlassBoxDetail, { kind: 'transform' }> }> = ({ detail }) => (
+    <div>
+        <div className="text-[9px] text-gray-600 uppercase tracking-wider mb-1">
+            Output character → most-attended source characters
+        </div>
+        <div className="space-y-1 max-h-48 overflow-y-auto">
+            {detail.attention.map((a, i) => {
+                const top = [...a.sourceWeights].sort((x, y) => y.weight - x.weight).slice(0, 3);
+                return (
+                    <div key={i} className="flex items-center gap-2">
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-mono border border-cyan-500/40 text-cyan-300 shrink-0 w-6 text-center">
+                            {a.outputChar === ' ' ? '␣' : a.outputChar}
+                        </span>
+                        <div className="flex gap-1 flex-wrap">
+                            {top.map((w, j) => (
+                                <span
+                                    key={j}
+                                    className="px-1 py-0.5 rounded text-[9px] font-mono border border-white/10 text-gray-400"
+                                >
+                                    {w.char === ' ' ? '␣' : w.char} <span className="text-gray-600">{(w.weight * 100).toFixed(0)}%</span>
+                                </span>
+                            ))}
+                        </div>
+                    </div>
+                );
+            })}
+        </div>
+    </div>
+);
+
 // "Why this decision?" — the inspectable half of a bnlm.* result that has
 // attribution machinery. A label/score alone can't be checked; the full
 // distribution (or occlusion contributions) shows the evidence a person
@@ -214,6 +249,7 @@ const GlassBoxPanel: React.FC<{ detail: GlassBoxDetail }> = ({ detail }) => {
                     {detail.kind === 'similarity' && <SimilarityBody detail={detail} />}
                     {detail.kind === 'tagging' && <TaggingBody detail={detail} />}
                     {detail.kind === 'score' && <ScoreBody detail={detail} />}
+                    {detail.kind === 'transform' && <TransformBody detail={detail} />}
                 </div>
             )}
         </div>

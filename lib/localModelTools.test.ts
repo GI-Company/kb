@@ -73,12 +73,12 @@ vi.mock('./localTagger', () => ({
 
 let seq2seqReady = false;
 const seq2seqEnsureInitAndTrain = vi.fn();
-const seq2seqTransform = vi.fn();
+const seq2seqTransformWithAttention = vi.fn();
 vi.mock('./localSeq2Seq', () => ({
   localSeq2Seq: {
     get isReady() { return seq2seqReady; },
     ensureInitAndTrain: (...a: any[]) => seq2seqEnsureInitAndTrain(...a),
-    transform: (...a: any[]) => seq2seqTransform(...a),
+    transformWithAttention: (...a: any[]) => seq2seqTransformWithAttention(...a),
   },
 }));
 
@@ -474,7 +474,7 @@ describe('bnlm.buildTransform', () => {
 describe('bnlm.transform', () => {
   beforeEach(() => {
     seq2seqReady = true;
-    seq2seqTransform.mockReset();
+    seq2seqTransformWithAttention.mockReset();
   });
 
   it('rejects a call with no text', async () => {
@@ -488,10 +488,12 @@ describe('bnlm.transform', () => {
       .rejects.toThrow(/buildTransform/);
   });
 
-  it('reports the transformed output from the trained model', async () => {
-    seq2seqTransform.mockResolvedValue('Hello, how are you?');
+  it('reports the transformed output and a transform glassBox from the trained model', async () => {
+    const attention = [{ outputChar: 'H', sourceWeights: [{ char: 'h', weight: 0.6 }, { char: 'i', weight: 0.4 }] }];
+    seq2seqTransformWithAttention.mockResolvedValue({ output: 'Hello, how are you?', attention });
     const result = await runLocalModelTool({ tool: 'bnlm.transform', args: { text: 'hey whats up', maxTokens: 40 } });
-    expect(seq2seqTransform).toHaveBeenCalledWith('hey whats up', 40);
+    expect(seq2seqTransformWithAttention).toHaveBeenCalledWith('hey whats up', 40);
     expect(result.text).toContain('Hello, how are you?');
+    expect(result.glassBox).toEqual({ kind: 'transform', output: 'Hello, how are you?', attention });
   });
 });

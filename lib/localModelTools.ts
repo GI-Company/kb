@@ -55,6 +55,12 @@ export type GlassBoxDetail =
       perplexity: number;
       /** Per-character surprise — see lib/localModel.ts's explainScore. */
       perCharacter: { char: string; index: number; actualProb: number; surprise: number; topAlternatives: { char: string; prob: number }[] }[];
+    }
+  | {
+      kind: 'transform';
+      output: string;
+      /** Cross-attention over the source, per output character — see lib/localSeq2Seq.ts's transformWithAttention for what this can and can't honestly claim. */
+      attention: { outputChar: string; sourceWeights: { char: string; weight: number }[] }[];
     };
 
 export interface ToolRunResult {
@@ -441,8 +447,11 @@ export async function runLocalModelTool(toolCall: ToolCall, userId?: string): Pr
       throw new Error('No seq2seq model has been trained yet in this tab — call bnlm.buildTransform first.');
     }
     const clampedTokens = Math.min(Math.max(Math.round(Number(maxTokens) || 80), 1), 200);
-    const output = await localSeq2Seq.transform(input, clampedTokens);
-    return { text: `Transformed output:\n\n${output}` };
+    const { output, attention } = await localSeq2Seq.transformWithAttention(input, clampedTokens);
+    return {
+      text: `Transformed output:\n\n${output}`,
+      glassBox: { kind: 'transform', output, attention },
+    };
   }
 
   throw new Error(`Unknown local model tool: "${toolCall.tool}"`);

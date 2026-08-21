@@ -172,6 +172,33 @@ class LocalSeq2SeqService {
     return this.tokenizer.decode(outIds);
   }
 
+  /**
+   * Same transform as transform(), but also returns, for each output
+   * character, the trained model's cross-attention over the source — see
+   * src/bnlm/seq2seq.js's generateWithAttention for what this can and
+   * can't honestly claim (a real, training-sensitive signal; not a clean
+   * "this exact source position caused this output character" story at
+   * this model's scale).
+   */
+  async transformWithAttention(text: string, maxNewTokens = 80): Promise<{
+    output: string;
+    attention: { outputChar: string; sourceWeights: { char: string; weight: number }[] }[];
+  }> {
+    if (!this.model || !this.tokenizer) throw new Error('No seq2seq model has been trained yet in this tab.');
+    const known = this.toKnownText(text);
+    const srcIds = clipToContext(this.tokenizer.encode(known), this.config.contextLen);
+    const srcChars = Array.from(srcIds).map(id => this.tokenizer!.itos[id]);
+    const clampedTokens = Math.min(Math.max(Math.round(maxNewTokens), 1), this.config.contextLen);
+    const { generated, attentionPerStep } = await this.model.generateWithAttention(srcIds, clampedTokens);
+
+    const attention = generated.map((id: number, i: number) => ({
+      outputChar: this.tokenizer!.itos[id],
+      sourceWeights: srcChars.map((char, s) => ({ char, weight: attentionPerStep[i][s] })),
+    }));
+
+    return { output: this.tokenizer.decode(generated), attention };
+  }
+
   private toKnownText(text: string): string {
     const known = Array.from(text).filter(c => this.tokenizer!.stoi.has(c)).join('');
     if (!known) {

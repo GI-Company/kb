@@ -56,7 +56,14 @@ import {
  * over the ENTIRE source, not just what came "before" it (source order
  * has no causal meaning from the decoder's point of view).
  */
-async function crossAttention(xQuery, xKV, w, numHeads, headDim, B, Tq, Tkv) {
+/**
+ * `attentionCapture`, if given, is pushed one `{ head, Tq, Tkv, weights }`
+ * entry per head — `weights` is the raw post-softmax Float32Array (length
+ * Tq*Tkv, row-major), read directly off the `probs` Tensor already computed
+ * here for the real forward pass. Purely additive: `undefined` (the
+ * default) skips the push entirely, so training pays nothing for it.
+ */
+async function crossAttention(xQuery, xKV, w, numHeads, headDim, B, Tq, Tkv, attentionCapture) {
   const Q = await linear(xQuery, w.Wq, w.bq);
   const K = await linear(xKV, w.Wk, w.bk);
   const V = await linear(xKV, w.Wv, w.bv);
@@ -73,6 +80,7 @@ async function crossAttention(xQuery, xKV, w, numHeads, headDim, B, Tq, Tkv) {
       let scores = await matmul(Qh, Kh, false, true); // (Tq, Tkv)
       scores = scaleConst(scores, 1 / Math.sqrt(headDim));
       const probs = softmaxRows(scores);
+      if (attentionCapture) attentionCapture.push({ head: h, Tq, Tkv, weights: probs.data });
       const headOut = await matmul(probs, Vh); // (Tq, headDim)
       pieces.push({ tensor: headOut, r0: rq0, c0 });
     }
@@ -141,9 +149,18 @@ export class BNLMSeq2Seq {
    * layer — the standard Transformer decoder block, built by hand here
    * since BNLM.encode()'s own loop has no cross-attention step to
    * interleave. B is always 1 (see file header for why).
+   *
+   * `attentionCapture`, if given, receives the LAST layer's per-head
+   * cross-attention weights (each a flat Float32Array of length Ttgt*Tsrc)
+   * — purely additive, `undefined` by default so loss()'s training path
+   * (which never passes it) pays nothing extra. Only the last layer:
+   * that's the one whose attention pattern is most directly tied to what
+   * actually gets weight-tied into the output logits two steps later, and
+   * capturing every layer would multiply the bookkeeping for a glass-box
+   * feature that only needs one honest answer, not four.
    * @returns {Promise<Tensor>} (Ttgt, vocabSize+1) logits, weight-tied against the decoder's own token embedding.
    */
-  async decoderLogits(tgtIdsFlat, encoderHidden, Ttgt, Tsrc) {
+  async decoderLogits(tgtIdsFlat, encoderHidden, Ttgt, Tsrc, attentionCapture) {
     const dec = this.decoder;
     if (Ttgt > dec.contextLen) throw new Error(`target length ${Ttgt} exceeds contextLen ${dec.contextLen}`);
 
@@ -157,13 +174,17 @@ export class BNLMSeq2Seq {
     for (let i = 0; i < dec.layers.length; i++) {
       const layer = dec.layers[i];
       const cross = this.crossLayers[i];
+      const isLastLayer = i === dec.layers.length - 1;
 
       const normed1 = layerNorm(x, layer.ln1g, layer.ln1b);
       const selfOut = await dec.attention(normed1, layer, 1, Ttgt, causalMaskAdd);
       x = addElem(x, selfOut);
 
       const normedCross = layerNorm(x, cross.lncg, cross.lncb);
-      const crossOut = await crossAttention(normedCross, encoderHidden, cross, this.numHeads, this.headDim, 1, Ttgt, Tsrc);
+      const crossOut = await crossAttention(
+        normedCross, encoderHidden, cross, this.numHeads, this.headDim, 1, Ttgt, Tsrc,
+        isLastLayer ? attentionCapture : undefined
+      );
       x = addElem(x, crossOut);
 
       const normed2 = layerNorm(x, layer.ln2g, layer.ln2b);
@@ -234,5 +255,57 @@ export class BNLMSeq2Seq {
       decInput.push(best);
     }
     return generated;
+  }
+
+  /**
+   * Same generation loop as generate(), but also returns, for each
+   * generated character, the last decoder layer's cross-attention weights
+   * over the source — averaged across heads, since a glass box wants one
+   * honest per-step answer, not `numHeads` competing ones. This is the
+   * genuinely free half of interpretability here: the attention weights
+   * are already computed as part of the real forward pass (see
+   * crossAttention's attentionCapture), unlike the classifier/embedder's
+   * occlusion, which needs extra forward passes it doesn't get for free.
+   * @param {Int32Array|number[]} srcIds
+   * @param {number} maxNewTokens
+   * @returns {Promise<{generated: number[], attentionPerStep: Float32Array[]}>} attentionPerStep[i] has length Tsrc and sums to ~1
+   */
+  async generateWithAttention(srcIds, maxNewTokens) {
+    const Tsrc = srcIds.length;
+    const encoderHidden = await this.encodeSource(Int32Array.from(srcIds), Tsrc);
+
+    const decInput = [this.bosId];
+    const generated = [];
+    const attentionPerStep = [];
+
+    for (let step = 0; step < maxNewTokens; step++) {
+      const Ttgt = decInput.length;
+      if (Ttgt > this.decoder.contextLen) break;
+
+      const attentionCapture = [];
+      const logits = await this.decoderLogits(Int32Array.from(decInput), encoderHidden, Ttgt, Tsrc, attentionCapture);
+      const V = this.vocabSize + 1;
+      const rowStart = (Ttgt - 1) * V;
+      let best = 0;
+      let bestVal = logits.data[rowStart];
+      for (let v = 1; v < this.vocabSize; v++) {
+        const val = logits.data[rowStart + v];
+        if (val > bestVal) { bestVal = val; best = v; }
+      }
+      generated.push(best);
+      decInput.push(best);
+
+      // The character just generated came from query row Ttgt-1 (the last
+      // position before this step's append) — average that row across
+      // every captured head.
+      const avg = new Float32Array(Tsrc);
+      for (const { Tkv, weights } of attentionCapture) {
+        const rowOffset = (Ttgt - 1) * Tkv;
+        for (let s = 0; s < Tsrc; s++) avg[s] += weights[rowOffset + s];
+      }
+      for (let s = 0; s < Tsrc; s++) avg[s] /= attentionCapture.length;
+      attentionPerStep.push(avg);
+    }
+    return { generated, attentionPerStep };
   }
 }
