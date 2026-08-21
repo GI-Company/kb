@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseLabeledExamples, describeDataset, parseParaphrasePairs, parseTaggedText } from './datasetGen';
+import { parseLabeledExamples, describeDataset, parseParaphrasePairs, parseTaggedText, parseTransformPairs } from './datasetGen';
 
 const LABELS = ['files', 'network'];
 
@@ -169,6 +169,47 @@ describe('parseTaggedText', () => {
     for (const ex of parseTaggedText(raw, TAGS, DEFAULT)) {
       expect(ex.tags).toHaveLength(Array.from(ex.text).length);
     }
+  });
+});
+
+describe('parseTransformPairs', () => {
+  it('parses the clean format', () => {
+    const out = parseTransformPairs('the cat sat down | The cat sat down.\nit was raining hard | It was raining hard.');
+    expect(out).toEqual([
+      { input: 'the cat sat down', output: 'The cat sat down.' },
+      { input: 'it was raining hard', output: 'It was raining hard.' },
+    ]);
+  });
+
+  it('survives the mess models actually emit', () => {
+    const messy = [
+      'Here are your examples:',
+      '',
+      '1. hey whats up | Hello, how are you?',
+      '- **cant make it 2nite** | I cannot make it tonight.',
+      '',
+      'Hope this helps!',
+    ].join('\n');
+    const out = parseTransformPairs(messy);
+    expect(out).toEqual([
+      { input: 'hey whats up', output: 'Hello, how are you?' },
+      { input: 'cant make it 2nite', output: 'I cannot make it tonight.' },
+    ]);
+  });
+
+  it('drops lines with no separator or an empty side', () => {
+    const out = parseTransformPairs('no separator\n| missing input\nmissing output |');
+    expect(out).toEqual([]);
+  });
+
+  it('keeps pipes that appear inside the output text', () => {
+    const out = parseTransformPairs('run a | grep b | cmd | run "a" then "grep b"');
+    expect(out).toEqual([{ input: 'run a', output: 'grep b | cmd | run "a" then "grep b"' }]);
+  });
+
+  it('drops duplicate pairs, case-insensitively', () => {
+    const out = parseTransformPairs('a | b\nA | B\na | b');
+    expect(out).toHaveLength(1);
   });
 });
 

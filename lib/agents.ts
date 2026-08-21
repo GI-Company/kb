@@ -167,6 +167,26 @@ the whole input:
 
 \`\`\`tool
 {"tool":"bnlm.tag","args":{"text":"rm -rf / will delete everything on disk"}}
+\`\`\`
+
+Finally, there is a SEQ2SEQ model, for "turn this into that": summarizing,
+rephrasing, or restyling a whole passage — reading the entire source and
+generating a genuinely different output conditioned on it. Use this instead
+of bnlm.generate when the task is a transformation of specific input text,
+not open-ended continuation of a prompt.
+
+Generate example pairs and train in one step — same shape as the other
+build* tools, Groq writes the pairs once and the model then runs with no
+further model calls:
+
+\`\`\`tool
+{"tool":"bnlm.buildTransform","args":{"task":"rewrite a casual message as a formal one","count":20,"steps":400}}
+\`\`\`
+
+Then apply it to new text:
+
+\`\`\`tool
+{"tool":"bnlm.transform","args":{"text":"hey cant make the meeting today","maxTokens":60}}
 \`\`\``;
 
 // Appended alongside BNLM_TOOL_CONTRACT — a general escape hatch for

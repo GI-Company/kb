@@ -15,10 +15,12 @@ vi.mock('./localModel', () => ({
 const generateProseCorpus = vi.fn();
 const generateParaphrasePairs = vi.fn();
 const generateTaggedExamples = vi.fn();
+const generateTransformPairs = vi.fn();
 vi.mock('./datasetGen', () => ({
   generateProseCorpus: (...a: any[]) => generateProseCorpus(...a),
   generateParaphrasePairs: (...a: any[]) => generateParaphrasePairs(...a),
   generateTaggedExamples: (...a: any[]) => generateTaggedExamples(...a),
+  generateTransformPairs: (...a: any[]) => generateTransformPairs(...a),
   generateLabeledExamples: vi.fn(),
   describeDataset: vi.fn(),
 }));
@@ -63,6 +65,17 @@ vi.mock('./localTagger', () => ({
     get isReady() { return taggerReady; },
     ensureInitAndTrain: (...a: any[]) => taggerEnsureInitAndTrain(...a),
     tag: (...a: any[]) => taggerTag(...a),
+  },
+}));
+
+let seq2seqReady = false;
+const seq2seqEnsureInitAndTrain = vi.fn();
+const seq2seqTransform = vi.fn();
+vi.mock('./localSeq2Seq', () => ({
+  localSeq2Seq: {
+    get isReady() { return seq2seqReady; },
+    ensureInitAndTrain: (...a: any[]) => seq2seqEnsureInitAndTrain(...a),
+    transform: (...a: any[]) => seq2seqTransform(...a),
   },
 }));
 
@@ -361,5 +374,73 @@ describe('bnlm.tag', () => {
     expect(taggerTag).toHaveBeenCalledWith('rm -rf / deletes everything');
     expect(result.text).toContain('[risky] "rm -rf /"');
     expect(result.text).toContain('[safe] " deletes everything"');
+  });
+});
+
+describe('bnlm.buildTransform', () => {
+  beforeEach(() => {
+    generateTransformPairs.mockReset();
+    seq2seqEnsureInitAndTrain.mockReset();
+  });
+
+  it('rejects a call with no task', async () => {
+    await expect(runLocalModelTool({ tool: 'bnlm.buildTransform', args: {} }))
+      .rejects.toThrow(/task/i);
+    expect(generateTransformPairs).not.toHaveBeenCalled();
+  });
+
+  it('generates transform pairs via Groq once, then trains the encoder-decoder locally', async () => {
+    const pairs = [{ input: 'hey whats up', output: 'Hello, how are you?' }];
+    generateTransformPairs.mockResolvedValue(pairs);
+    seq2seqEnsureInitAndTrain.mockResolvedValue({
+      init: { vocabSize: 20, paramCount: 5555, pairs: 1 },
+      train: { steps: 400, finalLoss: 0.2, lossHistory: [], paramCount: 5555, vocabSize: 20 },
+    });
+
+    const result = await runLocalModelTool({
+      tool: 'bnlm.buildTransform',
+      args: { task: 'formalize casual messages', count: 10, steps: 400 },
+    });
+
+    expect(generateTransformPairs).toHaveBeenCalledWith('formalize casual messages', 10);
+    expect(seq2seqEnsureInitAndTrain).toHaveBeenCalledWith(pairs, 400);
+    expect(result.text).toContain('formalize casual messages');
+    expect(result.text).toContain('5,555');
+  });
+
+  it('refuses to train when Groq returns no usable pairs', async () => {
+    generateTransformPairs.mockResolvedValue([]);
+
+    await expect(runLocalModelTool({
+      tool: 'bnlm.buildTransform',
+      args: { task: 'x' },
+    })).rejects.toThrow(/no usable/i);
+
+    expect(seq2seqEnsureInitAndTrain).not.toHaveBeenCalled();
+  });
+});
+
+describe('bnlm.transform', () => {
+  beforeEach(() => {
+    seq2seqReady = true;
+    seq2seqTransform.mockReset();
+  });
+
+  it('rejects a call with no text', async () => {
+    await expect(runLocalModelTool({ tool: 'bnlm.transform', args: {} }))
+      .rejects.toThrow(/text/i);
+  });
+
+  it('requires a trained seq2seq model', async () => {
+    seq2seqReady = false;
+    await expect(runLocalModelTool({ tool: 'bnlm.transform', args: { text: 'hi' } }))
+      .rejects.toThrow(/buildTransform/);
+  });
+
+  it('reports the transformed output from the trained model', async () => {
+    seq2seqTransform.mockResolvedValue('Hello, how are you?');
+    const result = await runLocalModelTool({ tool: 'bnlm.transform', args: { text: 'hey whats up', maxTokens: 40 } });
+    expect(seq2seqTransform).toHaveBeenCalledWith('hey whats up', 40);
+    expect(result.text).toContain('Hello, how are you?');
   });
 });

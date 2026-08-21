@@ -6,6 +6,7 @@
 //   - labeled    → {text, label} examples for the classifier
 //   - pairs      → {a, b} paraphrase pairs for the embedder's contrastive loss
 //   - tagged     → {text, tags[]} per-character labels for the tagger
+//   - transform  → {input, output} pairs for the seq2seq encoder-decoder
 //
 // WHY THE LABELED PROMPT IS SO INSISTENT ABOUT VARIETY:
 //
@@ -27,8 +28,9 @@ import { fetchGroqText } from './groqFetch';
 import { LabeledExample } from './localClassifier';
 import { ParaphrasePair } from './localEmbedder';
 import { TaggedExample } from './localTagger';
+import { TransformPair } from './localSeq2Seq';
 
-export type DatasetMode = 'prose' | 'labeled' | 'pairs' | 'tagged';
+export type DatasetMode = 'prose' | 'labeled' | 'pairs' | 'tagged' | 'transform';
 
 /** Prose corpus for the generative model — blank-line-separated documents. */
 export async function generateProseCorpus(topic: string, count: number): Promise<string> {
@@ -333,6 +335,63 @@ export function parseTaggedText(raw: string, tags: string[], defaultTag: string)
     for (const ch of line.slice(lastIndex)) { text += ch; charTags.push(defaultTag); }
 
     if (text.trim()) out.push({ text, tags: charTags });
+  }
+
+  return out;
+}
+
+/**
+ * (input, output) pairs for the seq2seq model — a flexible task description
+ * drives what transform gets learned (summarize, formalize, translate a
+ * style), the same flexible-domain shape generateLabeledExamples already
+ * uses for the classifier. Unlike generateParaphrasePairs (whose two sides
+ * must mean the SAME thing), here the two sides are meant to genuinely
+ * differ — that difference IS the thing being taught.
+ */
+export async function generateTransformPairs(task: string, count: number): Promise<TransformPair[]> {
+  const text = await fetchGroqText(
+    'agent-chat',
+    `Generate exactly ${count} example pairs for this text transformation task: ${task}.
+
+Each pair is a short "before" text and the correctly transformed "after" text.
+Keep both sides short (under a sentence or two) — this trains a tiny model,
+not a large one.
+
+Format — one pair per line, nothing else:
+before text | after text
+
+Vary the "before" side's length, phrasing, and topic across pairs so no two
+lines look alike. Write only the data lines. No headers, no numbering, no
+commentary.`
+  );
+  return parseTransformPairs(text);
+}
+
+/**
+ * Tolerant parser for the `before | after` line format — same reasoning as
+ * parseParaphrasePairs and parseLabeledExamples: a stray header or numbered
+ * line is dropped, not fatal to the rest of the batch.
+ */
+export function parseTransformPairs(raw: string): TransformPair[] {
+  const out: TransformPair[] = [];
+  const seen = new Set<string>();
+
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    const sep = trimmed.indexOf('|');
+    if (sep === -1) continue;
+
+    const input = trimmed.slice(0, sep).replace(/^[\s\-*>\d.)\]]+/, '').replace(/[*_`]/g, '').trim();
+    const output = trimmed.slice(sep + 1).replace(/[*_`]/g, '').trim();
+    if (!input || !output) continue;
+
+    const key = `${input.toLowerCase()}|${output.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push({ input, output });
   }
 
   return out;

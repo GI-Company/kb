@@ -162,4 +162,9 @@ export const AGENT_TOOL_CAPABILITIES: Record<string, Capability[]> = {
   // marked-up sentences, then the tagger trains and runs entirely locally.
   'bnlm.buildTagger': ['model:cloud', 'model:local'],
   'bnlm.tag': ['model:local'],
+  // Same shape again: generateTransformPairs spends Groq once to write
+  // example pairs, then the encoder-decoder trains and runs entirely
+  // locally.
+  'bnlm.buildTransform': ['model:cloud', 'model:local'],
+  'bnlm.transform': ['model:local'],
 };

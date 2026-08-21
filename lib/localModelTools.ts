@@ -8,7 +8,8 @@ import { localModel } from './localModel';
 import { localClassifier, LabeledExample } from './localClassifier';
 import { localEmbedder } from './localEmbedder';
 import { localTagger } from './localTagger';
-import { generateLabeledExamples, describeDataset, generateProseCorpus, generateParaphrasePairs, generateTaggedExamples } from './datasetGen';
+import { localSeq2Seq } from './localSeq2Seq';
+import { generateLabeledExamples, describeDataset, generateProseCorpus, generateParaphrasePairs, generateTaggedExamples, generateTransformPairs } from './datasetGen';
 import { cosineSimilarity } from '../src/bnlm/embed.js';
 import { vfs } from './vfs';
 import { resolveDir, ROOT_CWD } from './terminalFs';
@@ -61,6 +62,8 @@ export const LOCAL_MODEL_TOOL_NAMES = [
   'bnlm.semanticSearch',
   'bnlm.buildTagger',
   'bnlm.tag',
+  'bnlm.buildTransform',
+  'bnlm.transform',
 ] as const;
 
 export function extractToolCall(text: string): ToolCall | null {
@@ -373,6 +376,42 @@ export async function runLocalModelTool(toolCall: ToolCall, userId?: string): Pr
     const spans = await localTagger.tag(input);
     const lines = spans.map(s => `[${s.tag}] "${s.text}"`);
     return { text: `Tagged spans:\n${lines.join('\n')}` };
+  }
+
+  // ── Seq2seq tools ───────────────────────────────────────────────────
+  // Answers "turn this into that": summarize, rephrase, restyle — reading
+  // a whole source passage and generating a genuinely new output
+  // conditioned on it, not just continuing a prompt the way bnlm.generate
+  // does.
+
+  if (toolCall.tool === 'bnlm.buildTransform') {
+    const { task, count = 20, steps = 400 } = toolCall.args || {};
+    if (!task || typeof task !== 'string') {
+      throw new Error('bnlm.buildTransform needs a "task" describing the transformation to learn.');
+    }
+    const clampedCount = Math.min(Math.max(Math.round(Number(count) || 20), 5), 50);
+    const clampedSteps = Math.min(Math.max(Math.round(Number(steps) || 400), 1), 1200);
+    const pairs = await generateTransformPairs(task, clampedCount);
+    if (pairs.length === 0) {
+      throw new Error('Groq returned no usable transform pairs — try rewording the task.');
+    }
+    const { init, train } = await localSeq2Seq.ensureInitAndTrain(pairs, clampedSteps);
+    return { text:
+      `Generated ${pairs.length} example pairs for "${task}" via Groq, then trained a local encoder-decoder ` +
+      `right here in the browser: ${init.paramCount.toLocaleString()} params, vocab ${init.vocabSize}, ` +
+      `${train.steps} steps, final loss ${train.finalLoss.toFixed(3)}. It's ready for bnlm.transform now.`
+    };
+  }
+
+  if (toolCall.tool === 'bnlm.transform') {
+    const { text: input, maxTokens = 80 } = toolCall.args || {};
+    if (!input || typeof input !== 'string') throw new Error('bnlm.transform is missing "text" to transform.');
+    if (!localSeq2Seq.isReady) {
+      throw new Error('No seq2seq model has been trained yet in this tab — call bnlm.buildTransform first.');
+    }
+    const clampedTokens = Math.min(Math.max(Math.round(Number(maxTokens) || 80), 1), 200);
+    const output = await localSeq2Seq.transform(input, clampedTokens);
+    return { text: `Transformed output:\n\n${output}` };
   }
 
   throw new Error(`Unknown local model tool: "${toolCall.tool}"`);

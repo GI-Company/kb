@@ -147,9 +147,19 @@ export class BNLM {
    * the same body — see classifier.js, which pools these states and runs a
    * classification head instead. Language modeling is one task this trunk
    * can do, not the only one it's capable of.
+   *
+   * `causal = false` is for seq2seq.js's encoder half: an encoder should
+   * see the whole source sequence at every position (bidirectional), not
+   * just what came before — only meaningful for the attention mixer, since
+   * linear/rwkv are recurrent by construction and have no discrete mask to
+   * flip. Default stays `true` so every existing caller (classifier.js,
+   * lib/localModel.ts, embed.js) is unaffected.
    */
-  async encode(idsFlat, B, T) {
+  async encode(idsFlat, B, T, { causal = true } = {}) {
     if (T > this.contextLen) throw new Error(`sequence length ${T} exceeds contextLen ${this.contextLen}`);
+    if (!causal && this.mixerType !== "attention") {
+      throw new Error("non-causal encode() is only supported for the attention mixer");
+    }
 
     const tok = embeddingLookup(this.tokEmb, idsFlat);
     let x;
@@ -162,7 +172,9 @@ export class BNLM {
       x = tok;
     }
 
-    const causalMaskAdd = this.mixerType === "attention" ? buildCausalMaskAdditive(T) : null;
+    const causalMaskAdd = this.mixerType === "attention"
+      ? (causal ? buildCausalMaskAdditive(T) : new Float32Array(T * T)) // all-zero = attend everywhere
+      : null;
     const causalMask01 = this.mixerType === "linear" ? buildCausalMask01(T) : null;
 
     for (const layer of this.layers) {
@@ -778,7 +790,11 @@ function onesTensor(n) {
   return new Tensor(new Float32Array(n).fill(1), [n], true);
 }
 
-function buildCausalMaskAdditive(T) {
+// Exported for seq2seq.js's decoder: its self-attention sub-block is causal
+// (reuses this mask directly) while its cross-attention sub-block is not
+// (no mask at all — a decoder position attends over the whole encoder
+// output), so it needs this builder without duplicating it.
+export function buildCausalMaskAdditive(T) {
   const mask = new Float32Array(T * T);
   for (let i = 0; i < T; i++)
     for (let j = 0; j < T; j++)
