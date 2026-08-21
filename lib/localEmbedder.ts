@@ -180,17 +180,63 @@ class LocalEmbedderService {
   /** Embeds a single string with the trained trunk. */
   async embed(text: string): Promise<Float32Array> {
     if (!this.trunk || !this.tokenizer) throw new Error('No embedder has been trained yet in this tab.');
-    const known = this.toKnownText(text);
-    const ids = this.tokenizer.encode(known);
-    const { idsFlat, B, T, lengths } = padBatch([ids], this.config.contextLen);
-    const pooled = await pooledEmbedding(this.trunk, idsFlat, B, T, lengths);
-    return pooled.data.slice(0, this.config.dModel);
+    return this.embedKnown(this.toKnownText(text));
   }
 
   /** Cosine similarity between two strings, via the trained embedder. */
   async similarity(a: string, b: string): Promise<number> {
     const [va, vb] = await Promise.all([this.embed(a), this.embed(b)]);
     return cosineSimilarity(va, vb);
+  }
+
+  /**
+   * Occlusion-based attribution, mirroring lib/localClassifier.ts's
+   * attributeByOcclusion: for each character on each side, remove it,
+   * re-embed, and measure how far the OTHER side's fixed embedding moves
+   * away — a positive score means that character was holding the
+   * similarity up. Cost is O(len(A) + len(B)) embed() calls, the same
+   * complexity shape as the classifier's O(len(text)) predict() calls.
+   */
+  async explainSimilarity(textA: string, textB: string): Promise<{
+    score: number;
+    contributionsA: { token: string; index: number; score: number }[];
+    contributionsB: { token: string; index: number; score: number }[];
+  }> {
+    if (!this.trunk || !this.tokenizer) throw new Error('No embedder has been trained yet in this tab.');
+    const knownA = this.toKnownText(textA);
+    const knownB = this.toKnownText(textB);
+    const [vecA, vecB] = await Promise.all([this.embedKnown(knownA), this.embedKnown(knownB)]);
+    const score = cosineSimilarity(vecA, vecB);
+    const [contributionsA, contributionsB] = await Promise.all([
+      this.attributeAgainst(knownA, vecB, score),
+      this.attributeAgainst(knownB, vecA, score),
+    ]);
+    return { score, contributionsA, contributionsB };
+  }
+
+  private async embedKnown(known: string): Promise<Float32Array> {
+    const ids = this.tokenizer!.encode(known);
+    const { idsFlat, B, T, lengths } = padBatch([ids], this.config.contextLen);
+    const pooled = await pooledEmbedding(this.trunk!, idsFlat, B, T, lengths);
+    return pooled.data.slice(0, this.config.dModel);
+  }
+
+  /** Removes each character of `known` in turn, re-embeds, and scores the drop in similarity against `fixedVec` — a single-character string has nothing left to occlude, so it returns no contributions rather than throwing. */
+  private async attributeAgainst(
+    known: string,
+    fixedVec: Float32Array,
+    baseline: number
+  ): Promise<{ token: string; index: number; score: number }[]> {
+    const chars = Array.from(known);
+    if (chars.length < 2) return [];
+    const contributions: { token: string; index: number; score: number }[] = [];
+    for (let i = 0; i < chars.length; i++) {
+      const occluded = chars.slice(0, i).concat(chars.slice(i + 1)).join('');
+      const occludedVec = await this.embedKnown(occluded);
+      const occludedScore = cosineSimilarity(occludedVec, fixedVec);
+      contributions.push({ token: chars[i], index: i, score: baseline - occludedScore });
+    }
+    return contributions;
   }
 
   private toKnownText(text: string): string {

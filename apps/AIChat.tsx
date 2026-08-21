@@ -59,17 +59,101 @@ const ThinkingBlock: React.FC<{ content: string; isStreaming?: boolean }> = ({ c
     );
 };
 
-// "Why this decision?" — the inspectable half of a classifier result.
-// A label and a confidence number alone can't be checked; the full ranked
-// distribution shows how close the runner-up was, and the per-word bars
-// show which evidence actually held the answer up (measured by occlusion:
-// remove that word, how far does the probability fall).
+// Shared visual: a row of chips whose background opacity is scaled to each
+// contribution's magnitude relative to the strongest one in the set — so a
+// redundant-evidence case (every value near zero) doesn't get stretched
+// into looking decisive. Reused across every glassBox kind that reports
+// per-character/per-word occlusion contributions.
+const ContributionChips: React.FC<{
+    label: string;
+    contributions: { token: string; score: number }[];
+    tooltip: (c: { token: string; score: number }) => string;
+    emptyNote?: string;
+}> = ({ label, contributions, tooltip, emptyNote }) => {
+    if (contributions.length === 0) return null;
+    const maxScore = Math.max(0.001, ...contributions.map(c => Math.abs(c.score)));
+    return (
+        <div>
+            <div className="text-[9px] text-gray-600 uppercase tracking-wider mb-1">{label}</div>
+            <div className="flex flex-wrap gap-1">
+                {contributions.map((c, i) => (
+                    <span
+                        key={i}
+                        title={tooltip(c)}
+                        className="px-1.5 py-0.5 rounded text-[10px] font-mono border"
+                        style={{
+                            backgroundColor: `rgba(34, 211, 238, ${Math.max(0, c.score / maxScore) * 0.35})`,
+                            borderColor: `rgba(34, 211, 238, ${Math.max(0, c.score / maxScore) * 0.5})`,
+                        }}
+                    >
+                        {c.token}
+                    </span>
+                ))}
+            </div>
+            {emptyNote && contributions.every(c => Math.abs(c.score) < 0.01) && (
+                <div className="text-[10px] text-gray-600 mt-1 italic">{emptyNote}</div>
+            )}
+        </div>
+    );
+};
+
+const ClassificationBody: React.FC<{ detail: Extract<GlassBoxDetail, { kind: 'classification' }> }> = ({ detail }) => (
+    <>
+        <div>
+            <div className="text-[9px] text-gray-600 uppercase tracking-wider mb-1">Label probabilities</div>
+            {detail.ranked.map(r => (
+                <div key={r.label} className="flex items-center gap-2 mb-0.5">
+                    <span className={`text-[10px] font-mono w-24 truncate ${r.label === detail.label ? 'text-cyan-300' : 'text-gray-500'}`}>
+                        {r.label}
+                    </span>
+                    <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
+                        <div
+                            className={r.label === detail.label ? 'h-full bg-cyan-400' : 'h-full bg-gray-600'}
+                            style={{ width: `${Math.max(r.probability * 100, 1)}%` }}
+                        />
+                    </div>
+                    <span className="text-[10px] font-mono text-gray-500 w-11 text-right">
+                        {(r.probability * 100).toFixed(1)}%
+                    </span>
+                </div>
+            ))}
+        </div>
+        {detail.contributions && (
+            <ContributionChips
+                label="What drove it (drop in confidence if removed)"
+                contributions={detail.contributions}
+                tooltip={c => `Removing "${c.token}" changes confidence by ${(c.score * 100).toFixed(1)} points`}
+                emptyNote="No single word was decisive — the evidence is redundant."
+            />
+        )}
+    </>
+);
+
+const SimilarityBody: React.FC<{ detail: Extract<GlassBoxDetail, { kind: 'similarity' }> }> = ({ detail }) => (
+    <>
+        <div className="text-[10px] font-mono text-gray-500">
+            Cosine similarity: <span className="text-cyan-300">{detail.score.toFixed(3)}</span>
+        </div>
+        <ContributionChips
+            label="Text A — what held the similarity up (drop if removed)"
+            contributions={detail.contributionsA}
+            tooltip={c => `Removing "${c.token}" changes similarity by ${(c.score * 100).toFixed(1)} points`}
+        />
+        <ContributionChips
+            label="Text B — what held the similarity up (drop if removed)"
+            contributions={detail.contributionsB}
+            tooltip={c => `Removing "${c.token}" changes similarity by ${(c.score * 100).toFixed(1)} points`}
+        />
+    </>
+);
+
+// "Why this decision?" — the inspectable half of a bnlm.* result that has
+// attribution machinery. A label/score alone can't be checked; the full
+// distribution (or occlusion contributions) shows the evidence a person
+// could actually verify.
 const GlassBoxPanel: React.FC<{ detail: GlassBoxDetail }> = ({ detail }) => {
     const [expanded, setExpanded] = useState(false);
-    // Scale bars against the strongest contribution so a redundant-evidence
-    // case (every word near zero) doesn't get stretched into looking decisive.
-    const maxScore = Math.max(0.001, ...(detail.contributions || []).map(c => Math.abs(c.score)));
-    const borderline = detail.margin < 0.15;
+    const borderline = detail.kind === 'classification' && detail.margin < 0.15;
 
     return (
         <div className="mt-2">
@@ -84,54 +168,8 @@ const GlassBoxPanel: React.FC<{ detail: GlassBoxDetail }> = ({ detail }) => {
             </button>
             {expanded && (
                 <div className="mt-1.5 ml-4 pl-2 border-l border-cyan-500/20 space-y-2">
-                    <div>
-                        <div className="text-[9px] text-gray-600 uppercase tracking-wider mb-1">Label probabilities</div>
-                        {detail.ranked.map(r => (
-                            <div key={r.label} className="flex items-center gap-2 mb-0.5">
-                                <span className={`text-[10px] font-mono w-24 truncate ${r.label === detail.label ? 'text-cyan-300' : 'text-gray-500'}`}>
-                                    {r.label}
-                                </span>
-                                <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
-                                    <div
-                                        className={r.label === detail.label ? 'h-full bg-cyan-400' : 'h-full bg-gray-600'}
-                                        style={{ width: `${Math.max(r.probability * 100, 1)}%` }}
-                                    />
-                                </div>
-                                <span className="text-[10px] font-mono text-gray-500 w-11 text-right">
-                                    {(r.probability * 100).toFixed(1)}%
-                                </span>
-                            </div>
-                        ))}
-                    </div>
-
-                    {detail.contributions && detail.contributions.length > 0 && (
-                        <div>
-                            <div className="text-[9px] text-gray-600 uppercase tracking-wider mb-1">
-                                What drove it (drop in confidence if removed)
-                            </div>
-                            <div className="flex flex-wrap gap-1">
-                                {detail.contributions.map((c, i) => (
-                                    <span
-                                        key={i}
-                                        title={`Removing "${c.token}" changes confidence by ${(c.score * 100).toFixed(1)} points`}
-                                        className="px-1.5 py-0.5 rounded text-[10px] font-mono border"
-                                        style={{
-                                            // Opacity encodes magnitude relative to the strongest word.
-                                            backgroundColor: `rgba(34, 211, 238, ${Math.max(0, c.score / maxScore) * 0.35})`,
-                                            borderColor: `rgba(34, 211, 238, ${Math.max(0, c.score / maxScore) * 0.5})`,
-                                        }}
-                                    >
-                                        {c.token}
-                                    </span>
-                                ))}
-                            </div>
-                            {detail.contributions.every(c => Math.abs(c.score) < 0.01) && (
-                                <div className="text-[10px] text-gray-600 mt-1 italic">
-                                    No single word was decisive — the evidence is redundant.
-                                </div>
-                            )}
-                        </div>
-                    )}
+                    {detail.kind === 'classification' && <ClassificationBody detail={detail} />}
+                    {detail.kind === 'similarity' && <SimilarityBody detail={detail} />}
                 </div>
             )}
         </div>

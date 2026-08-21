@@ -21,18 +21,30 @@ export interface ToolCall {
 
 /**
  * Structured detail behind a tool result, for the UI's "Why?" panel.
- * A classification that can only be read as prose isn't inspectable — the
- * caller needs the distribution and the attribution as data.
+ * A classification (or similarity score, or tagged span, or transform) that
+ * can only be read as prose isn't inspectable — the caller needs the
+ * distribution and the attribution as data. One variant per model type that
+ * has attribution machinery; grows as each one gets it (see
+ * lib/localEmbedder.ts's explainSimilarity for the first non-classifier
+ * kind, 'similarity').
  */
-export interface GlassBoxDetail {
-  kind: 'classification';
-  label: string;
-  confidence: number;
-  margin: number;
-  ranked: { label: string; probability: number }[];
-  /** Per-word causal contribution, when an explanation was computed. */
-  contributions?: { token: string; score: number }[];
-}
+export type GlassBoxDetail =
+  | {
+      kind: 'classification';
+      label: string;
+      confidence: number;
+      margin: number;
+      ranked: { label: string; probability: number }[];
+      /** Per-word causal contribution, when an explanation was computed. */
+      contributions?: { token: string; score: number }[];
+    }
+  | {
+      kind: 'similarity';
+      score: number;
+      /** Per-character occlusion contribution on each side — see lib/localEmbedder.ts's explainSimilarity. */
+      contributionsA: { token: string; index: number; score: number }[];
+      contributionsB: { token: string; index: number; score: number }[];
+    };
 
 export interface ToolRunResult {
   /** What goes into the chat thread. */
@@ -201,8 +213,11 @@ export async function runLocalModelTool(toolCall: ToolCall, userId?: string): Pr
     if (!localEmbedder.isReady) {
       throw new Error('No embedder has been trained yet in this tab — call bnlm.buildEmbeddingIndex first.');
     }
-    const score = await localEmbedder.similarity(textA, textB);
-    return { text: `Cosine similarity: ${score.toFixed(3)} (1.0 = identical meaning, 0 = unrelated, -1.0 = opposite).` };
+    const { score, contributionsA, contributionsB } = await localEmbedder.explainSimilarity(textA, textB);
+    return {
+      text: `Cosine similarity: ${score.toFixed(3)} (1.0 = identical meaning, 0 = unrelated, -1.0 = opposite).`,
+      glassBox: { kind: 'similarity', score, contributionsA, contributionsB },
+    };
   }
 
   if (toolCall.tool === 'bnlm.semanticSearch') {

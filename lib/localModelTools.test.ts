@@ -32,13 +32,13 @@ vi.mock('./localClassifier', () => ({
 let embedderReady = false;
 const embedderEnsureInitAndTrain = vi.fn();
 const embedderEmbed = vi.fn();
-const embedderSimilarity = vi.fn();
+const embedderExplainSimilarity = vi.fn();
 vi.mock('./localEmbedder', () => ({
   localEmbedder: {
     get isReady() { return embedderReady; },
     ensureInitAndTrain: (...a: any[]) => embedderEnsureInitAndTrain(...a),
     embed: (...a: any[]) => embedderEmbed(...a),
-    similarity: (...a: any[]) => embedderSimilarity(...a),
+    explainSimilarity: (...a: any[]) => embedderExplainSimilarity(...a),
   },
 }));
 
@@ -189,7 +189,7 @@ describe('bnlm.buildEmbeddingIndex', () => {
 describe('bnlm.similarity', () => {
   beforeEach(() => {
     embedderReady = true;
-    embedderSimilarity.mockReset();
+    embedderExplainSimilarity.mockReset();
   });
 
   it('rejects a call missing either text argument', async () => {
@@ -203,11 +203,21 @@ describe('bnlm.similarity', () => {
       .rejects.toThrow(/buildEmbeddingIndex/);
   });
 
-  it('reports the cosine similarity from the trained embedder', async () => {
-    embedderSimilarity.mockResolvedValue(0.8234);
+  it('reports the cosine similarity and a similarity glassBox from the trained embedder', async () => {
+    embedderExplainSimilarity.mockResolvedValue({
+      score: 0.8234,
+      contributionsA: [{ token: 'a', index: 0, score: 0.1 }],
+      contributionsB: [{ token: 'b', index: 0, score: 0.05 }],
+    });
     const result = await runLocalModelTool({ tool: 'bnlm.similarity', args: { textA: 'a', textB: 'b' } });
-    expect(embedderSimilarity).toHaveBeenCalledWith('a', 'b');
+    expect(embedderExplainSimilarity).toHaveBeenCalledWith('a', 'b');
     expect(result.text).toContain('0.823');
+    expect(result.glassBox).toEqual({
+      kind: 'similarity',
+      score: 0.8234,
+      contributionsA: [{ token: 'a', index: 0, score: 0.1 }],
+      contributionsB: [{ token: 'b', index: 0, score: 0.05 }],
+    });
   });
 });
 
