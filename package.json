@@ -18,9 +18,9 @@
     "@supabase/supabase-js": "^2.112.3",
     "framer-motion": "^12.36.0",
     "lucide-react": "^0.563.0",
-    "posthog-js": "^1.417.1",
-    "puppeteer-core": "^25.7.0",
-    "pyodide": "^314.0.3",
+    "posthog-js": "^1.418.6",
+    "puppeteer-core": "^25.8.0",
+    "pyodide": "^314.0.5",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "sucrase": "^3.35.1",
@@ -36,8 +36,8 @@
     "jsdom": "^28.1.0",
     "playwright": "^1.58.2",
     "tailwindcss": "^4.3.3",
-    "typescript": "~5.8.2",
+    "typescript": "~5.9.3",
     "vite": "^6.2.0",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.11"
   }
 }
